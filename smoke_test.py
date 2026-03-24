@@ -65,10 +65,13 @@ except Exception as e:
 try:
     from web_scraper import trendyol_arama, n11_arama
     print("TEST 3: E-Ticaret Arama Botlari (Trendyol/N11)... ", end="")
-    t_res = trendyol_arama("masa")
-    n_res = n11_arama("masa")
+    t_res, t_err = trendyol_arama("masa")
+    n_res, n_err = n11_arama("masa")
     assert isinstance(t_res, list) and isinstance(n_res, list), "Donen veriler hatali."
-    print("BASARILI (SCRAPER CALISIYOR)")
+    if t_err or n_err:
+        print(f"UYARI (hatalar: {t_err + n_err})")
+    else:
+        print("BASARILI (SCRAPER CALISIYOR)")
 except Exception as e:
     print(f"FAILED 3 -> {e}")
 

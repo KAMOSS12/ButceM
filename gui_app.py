@@ -428,7 +428,7 @@ class App(ctk.CTk):
                 toplam_h += toplam_maliyet
             else:
                 ikon = "Bekliyor"
-                bekleyen_h += fyt 
+                bekleyen_h += toplam_maliyet
             
             taksit_str = f"{ot}/{ts}" if ts >= 2 else "Nakit"
             tag = "evenrow" if count % 2 == 0 else "oddrow"
@@ -492,13 +492,19 @@ class App(ctk.CTk):
 
         try:
             if dosya_yolu.endswith(".csv"):
-                df = pd.read_csv(dosya_yolu, nrows=10000)
+                df_full = pd.read_csv(dosya_yolu)
             else:
-                df = pd.read_excel(dosya_yolu, nrows=10000)
+                df_full = pd.read_excel(dosya_yolu)
+            toplam_satir = len(df_full)
+            if toplam_satir > 10000:
+                messagebox.showwarning("Uyarı", f"Dosyada {toplam_satir} satır var. Maksimum 10.000 satır aktarılacak, geri kalanı atlanacaktır.")
+                df = df_full.head(10000)
+            else:
+                df = df_full
         except Exception as e:
             messagebox.showerror("Hata", f"Dosya okunurken hata oluştu:\n{e}")
             return
-            
+
         # Temel kolon denetimleri
         gerekenler = ["Kategori", "Ürün Adı", "Fiyat"]
         if not set(gerekenler).issubset(df.columns):
@@ -1031,19 +1037,25 @@ class App(ctk.CTk):
             import web_scraper
             try:
                 mod = self.radio_var.get()
-                sonuclar = web_scraper.urun_ara(kelime, mode=mod)
+                sonuclar, hatalar = web_scraper.urun_ara(kelime, mode=mod)
                 def ekrana_bas():
-                    if not sonuclar:
-                        self.lbl_web_durum.configure(text="Sonuç bulunamadı veya bağlantı hatası oluştu.", text_color="yellow")
+                    if not sonuclar and hatalar:
+                        self.lbl_web_durum.configure(text=f"Sonuç bulunamadı: {' | '.join(hatalar)}", text_color="#FF5252")
+                        return
+                    elif not sonuclar:
+                        self.lbl_web_durum.configure(text="Sonuç bulunamadı.", text_color="yellow")
                         return
                     for s in sonuclar:
                         self.tree_web.insert("", "end", values=(s['platform'], s['baslik'], f"{s['fiyat']:.2f}", s['link']))
-                    self.lbl_web_durum.configure(text=f"✅ {len(sonuclar)} sonuç listelendi. (Ucuzdan pahalıya)", text_color="#64DD17")
+                    durum_txt = f"✅ {len(sonuclar)} sonuç listelendi. (Ucuzdan pahalıya)"
+                    if hatalar:
+                        durum_txt += f"  |  ⚠️ {' | '.join(hatalar)}"
+                    self.lbl_web_durum.configure(text=durum_txt, text_color="#64DD17")
                 self.after(0, ekrana_bas)
             except Exception as e:
                 def hata_bas():
-                    hmesaj = str(e)
-                    messagebox.showerror("Eksik Kurulum veya Sistem Hatası", hmesaj)
+                    hmesaj = str(e)[:200]
+                    messagebox.showerror("Arama Hatası", hmesaj)
                     self.lbl_web_durum.configure(text="❌ Arama motoru hatası. Lütfen uyarılara bakın.", text_color="#FF5252")
                 self.after(0, hata_bas)
 

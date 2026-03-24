@@ -7,12 +7,13 @@ def trendyol_arama(kelime):
     url = f"https://public.trendyol.com/discovery-web-searchgw-service/v2/api/infinite-scroll/sr?q={query}"
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
     sonuclar = []
+    hatalar = []
     try:
         r = requests.get(url, headers=headers, timeout=5)
         if r.status_code == 200:
             data = r.json()
             products = data.get("result", {}).get("products", [])
-            for p in products[:20]: # İlk 20
+            for p in products[:20]:
                 baslik = p.get("name", "")
                 fiyat = float(p.get("price", {}).get("sellingPrice", 0))
                 link = "https://www.trendyol.com" + p.get("url", "")
@@ -23,15 +24,22 @@ def trendyol_arama(kelime):
                         "fiyat": fiyat,
                         "link": link
                     })
-    except Exception:
-        pass
-    return sonuclar
+        else:
+            hatalar.append(f"Trendyol: HTTP {r.status_code}")
+    except requests.exceptions.Timeout:
+        hatalar.append("Trendyol: Bağlantı zaman aşımına uğradı")
+    except requests.exceptions.ConnectionError:
+        hatalar.append("Trendyol: İnternet bağlantısı kurulamadı")
+    except Exception as e:
+        hatalar.append(f"Trendyol: {str(e)[:60]}")
+    return sonuclar, hatalar
 
 def n11_arama(kelime):
     query = urllib.parse.quote(kelime.replace(" ", "+"))
     url = f"https://www.n11.com/arama?q={query}"
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
     sonuclar = []
+    hatalar = []
     try:
         r = requests.get(url, headers=headers, timeout=5)
         if r.status_code == 200:
@@ -41,7 +49,7 @@ def n11_arama(kelime):
                 title_tag = p.find("h3", class_="productName")
                 price_tag = p.find("ins") or p.find("a", class_="newPrice") or p.find("span", class_="newPrice")
                 link_tag = p.find("a", class_="plink")
-                
+
                 if title_tag and price_tag and link_tag:
                     baslik = title_tag.text.strip()
                     fiyat_metin = price_tag.text.replace("TL", "").replace(".", "").replace(",", ".").strip()
@@ -56,9 +64,15 @@ def n11_arama(kelime):
                         })
                     except ValueError:
                         pass
-    except Exception:
-        pass
-    return sonuclar
+        else:
+            hatalar.append(f"N11: HTTP {r.status_code}")
+    except requests.exceptions.Timeout:
+        hatalar.append("N11: Bağlantı zaman aşımına uğradı")
+    except requests.exceptions.ConnectionError:
+        hatalar.append("N11: İnternet bağlantısı kurulamadı")
+    except Exception as e:
+        hatalar.append(f"N11: {str(e)[:60]}")
+    return sonuclar, hatalar
 
 def amazon_arama_selenium(kelime):
     try:
@@ -75,30 +89,30 @@ def amazon_arama_selenium(kelime):
     options.add_argument("--disable-gpu")
     options.add_argument("--no-sandbox")
     options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-    
+
     sonuclar = []
     driver = None
     try:
         service = Service(ChromeDriverManager().install())
         driver = webdriver.Chrome(service=service, options=options)
         driver.set_page_load_timeout(15)
-        
+
         query = urllib.parse.quote(kelime)
         driver.get(f"https://www.amazon.com.tr/s?k={query}")
-        
+
         items = driver.find_elements(By.CSS_SELECTOR, "div[data-component-type='s-search-result']")
         for item in items[:15]:
             try:
                 title_elem = item.find_element(By.CSS_SELECTOR, "h2 a span")
                 baslik = title_elem.text.strip()
-                
+
                 price_elem = item.find_element(By.CSS_SELECTOR, "span.a-price-whole")
                 fiyat_metin = price_elem.text.replace(".", "").replace(",", ".").strip()
                 fiyat = float(fiyat_metin)
-                
+
                 link_elem = item.find_element(By.CSS_SELECTOR, "h2 a")
                 link = link_elem.get_attribute("href")
-                
+
                 if baslik and fiyat > 0:
                     sonuclar.append({
                         "platform": "Amazon",
@@ -117,14 +131,17 @@ def amazon_arama_selenium(kelime):
 
 def urun_ara(kelime, mode="hizli"):
     tum_sonuclar = []
+    tum_hatalar = []
     if mode == "kapsamli":
         amz_res = amazon_arama_selenium(kelime)
         tum_sonuclar.extend(amz_res)
     else:
-        t_res = trendyol_arama(kelime)
-        n_res = n11_arama(kelime)
+        t_res, t_hatalar = trendyol_arama(kelime)
+        n_res, n_hatalar = n11_arama(kelime)
         tum_sonuclar.extend(t_res)
         tum_sonuclar.extend(n_res)
-        
+        tum_hatalar.extend(t_hatalar)
+        tum_hatalar.extend(n_hatalar)
+
     tum_sonuclar = sorted(tum_sonuclar, key=lambda x: x['fiyat'])
-    return tum_sonuclar
+    return tum_sonuclar, tum_hatalar
