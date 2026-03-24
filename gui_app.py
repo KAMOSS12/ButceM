@@ -8,6 +8,8 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from dotenv import load_dotenv
 import database
 import sqlite3
+
+__version__ = "2.1.0"
 import currency
 import threading
 import webbrowser
@@ -98,9 +100,19 @@ class App(ctk.CTk):
         self.login_lbl.pack()
 
     def check_pin(self, login_win):
+        if not hasattr(self, '_pin_attempts'):
+            self._pin_attempts = 0
+            self._pin_locked_until = 0
+
+        now = time.time()
+        if now < self._pin_locked_until:
+            kalan = int(self._pin_locked_until - now)
+            self.login_lbl.configure(text=f"Çok fazla hatalı deneme! {kalan}sn bekleyin.", text_color="#FF5252")
+            return
+
         p = self.pin_entry.get()
         correct_pin = os.getenv("APP_PIN", "1234")
-        
+
         if len(correct_pin) != 64:
             new_hash = hashlib.sha256(correct_pin.encode("utf-8")).hexdigest()
             os.environ["APP_PIN"] = new_hash
@@ -109,17 +121,27 @@ class App(ctk.CTk):
                 open(env_file, 'a').close()
             set_key(env_file, "APP_PIN", new_hash)
             correct_pin = new_hash
-            
+
         input_hash = hashlib.sha256(p.encode("utf-8")).hexdigest()
-        
+
         if input_hash == correct_pin:
+            self._pin_attempts = 0
             login_win.destroy()
-            self.deiconify() 
+            self.deiconify()
             self.load_currency()
             self.show_liste_frame()
             self.start_autolock()
         else:
-            self.login_lbl.configure(text="Hatalı PIN! Lütfen tekrar deneyin.", text_color="#FF5252")
+            self._pin_attempts += 1
+            if self._pin_attempts >= 5:
+                self._pin_locked_until = now + 60
+                self.login_lbl.configure(text="5 hatalı deneme! 60 saniye kilitlendi.", text_color="#FF5252")
+            elif self._pin_attempts >= 3:
+                self._pin_locked_until = now + 15
+                self.login_lbl.configure(text=f"3 hatalı deneme! 15 saniye bekleyin.", text_color="#FF5252")
+            else:
+                self.login_lbl.configure(text=f"Hatalı PIN! ({self._pin_attempts}/5 deneme)", text_color="#FF5252")
+        self.pin_entry.delete(0, 'end')
 
     def start_autolock(self):
         self.last_activity = time.time()
@@ -158,7 +180,7 @@ class App(ctk.CTk):
     def update_ozet_usd(self):
         try:
             self.load_treeview_data()
-        except:
+        except Exception:
             pass
 
     def clear_main_frame(self):
@@ -206,23 +228,45 @@ class App(ctk.CTk):
         self.entry_link = ctk.CTkEntry(self.main_frame, width=250)
         self.entry_link.grid(row=5, column=1, padx=20, pady=15, sticky="w")
 
-        lbl_taksit = ctk.CTkLabel(self.main_frame, text="Taksit Sayısı:")
-        lbl_taksit.grid(row=6, column=0, padx=20, pady=15, sticky="e")
-        self.entry_taksit = ctk.CTkEntry(self.main_frame, width=250, placeholder_text="Örn: 1 (Peşin)")
-        self.entry_taksit.insert(0, "1")
-        self.entry_taksit.grid(row=6, column=1, padx=20, pady=15, sticky="w")
+        lbl_odeme = ctk.CTkLabel(self.main_frame, text="Ödeme Şekli:")
+        lbl_odeme.grid(row=6, column=0, padx=20, pady=15, sticky="e")
 
-        lbl_vade = ctk.CTkLabel(self.main_frame, text="Vade Farkı (TL):")
-        lbl_vade.grid(row=7, column=0, padx=20, pady=15, sticky="e")
-        self.entry_vade = ctk.CTkEntry(self.main_frame, width=250, placeholder_text="Örn: 0")
-        self.entry_vade.insert(0, "0.0")
-        self.entry_vade.grid(row=7, column=1, padx=20, pady=15, sticky="w")
+        odeme_frame = ctk.CTkFrame(self.main_frame, fg_color="transparent")
+        odeme_frame.grid(row=6, column=1, padx=20, pady=15, sticky="w")
+
+        self.odeme_var = ctk.StringVar(value="nakit")
+
+        self.radio_nakit = ctk.CTkRadioButton(odeme_frame, text="Nakit", variable=self.odeme_var, value="nakit", command=self.toggle_taksit_alanlari)
+        self.radio_nakit.pack(side="left", padx=(0, 20))
+        self.radio_taksitli = ctk.CTkRadioButton(odeme_frame, text="Taksitli", variable=self.odeme_var, value="taksitli", command=self.toggle_taksit_alanlari)
+        self.radio_taksitli.pack(side="left")
+
+        self.taksit_frame = ctk.CTkFrame(self.main_frame, fg_color="transparent")
+        self.taksit_frame.grid(row=7, column=0, columnspan=2, pady=5)
+
+        lbl_taksit = ctk.CTkLabel(self.taksit_frame, text="Taksit Sayısı:")
+        lbl_taksit.grid(row=0, column=0, padx=20, pady=8, sticky="e")
+        self.entry_taksit = ctk.CTkEntry(self.taksit_frame, width=250, placeholder_text="Örn: 6")
+        self.entry_taksit.grid(row=0, column=1, padx=20, pady=8, sticky="w")
+
+        lbl_vade = ctk.CTkLabel(self.taksit_frame, text="Vade Farkı (TL):")
+        lbl_vade.grid(row=1, column=0, padx=20, pady=8, sticky="e")
+        self.entry_vade = ctk.CTkEntry(self.taksit_frame, width=250, placeholder_text="Örn: 150.00")
+        self.entry_vade.grid(row=1, column=1, padx=20, pady=8, sticky="w")
+
+        self.taksit_frame.grid_remove()
 
         btn_kaydet = ctk.CTkButton(self.main_frame, text="KAYDET", command=self.kaydet_veriler, fg_color="#1B5E20", hover_color="#003300")
         btn_kaydet.grid(row=8, column=0, columnspan=2, pady=30)
-        
+
         self.lbl_mesaj = ctk.CTkLabel(self.main_frame, text="", text_color="yellow")
         self.lbl_mesaj.grid(row=9, column=0, columnspan=2)
+
+    def toggle_taksit_alanlari(self):
+        if self.odeme_var.get() == "taksitli":
+            self.taksit_frame.grid()
+        else:
+            self.taksit_frame.grid_remove()
 
     def kaydet_veriler(self):
         kategori = self.entry_kat.get().strip()
@@ -230,20 +274,35 @@ class App(ctk.CTk):
         fiyat = self.entry_fiyat.get().strip()
         durum = self.option_durum.get().strip()
         link = self.entry_link.get().strip()
-        taksit_str = self.entry_taksit.get().strip()
-        vade_str = self.entry_vade.get().strip()
 
         if not kategori or not ad or not fiyat:
             self.lbl_mesaj.configure(text="Uyarı: Lütfen tüm alanları doldurun!", text_color="#FF5252")
             return
-            
+
         try:
             fiyat_float = float(fiyat.replace(',', '.'))
-            taksit = int(taksit_str) if taksit_str else 1
-            vade = float(vade_str.replace(',', '.')) if vade_str else 0.0
+            if fiyat_float <= 0:
+                self.lbl_mesaj.configure(text="Hata: Fiyat sıfırdan büyük olmalıdır!", text_color="#FF5252")
+                return
         except ValueError:
-            self.lbl_mesaj.configure(text="Hata: Fiyat, Taksit ve Vade alanlarına sadece rakam girmelisiniz!", text_color="#FF5252")
+            self.lbl_mesaj.configure(text="Hata: Fiyat alanına sadece rakam giriniz!", text_color="#FF5252")
             return
+
+        if self.odeme_var.get() == "nakit":
+            taksit = 0
+            vade = 0.0
+        else:
+            taksit_str = self.entry_taksit.get().strip()
+            vade_str = self.entry_vade.get().strip()
+            try:
+                taksit = int(taksit_str) if taksit_str else 2
+                vade = float(vade_str.replace(',', '.')) if vade_str else 0.0
+                if taksit < 2:
+                    self.lbl_mesaj.configure(text="Hata: Taksit sayısı en az 2 olmalıdır!", text_color="#FF5252")
+                    return
+            except ValueError:
+                self.lbl_mesaj.configure(text="Hata: Taksit ve Vade alanlarına sadece rakam giriniz!", text_color="#FF5252")
+                return
 
         database.urun_ekle(kategori, ad, fiyat_float, durum, link, taksit_sayisi=taksit, vade_farki=vade)
         self.lbl_mesaj.configure(text=f"✅ '{ad}' veritabanına eklendi!", text_color="#64DD17")
@@ -251,10 +310,10 @@ class App(ctk.CTk):
         self.entry_ad.delete(0, 'end')
         self.entry_fiyat.delete(0, 'end')
         self.entry_link.delete(0, 'end')
+        self.odeme_var.set("nakit")
+        self.toggle_taksit_alanlari()
         self.entry_taksit.delete(0, 'end')
-        self.entry_taksit.insert(0, "1")
         self.entry_vade.delete(0, 'end')
-        self.entry_vade.insert(0, "0.0")
 
     def show_liste_frame(self):
         self.clear_main_frame()
@@ -305,7 +364,7 @@ class App(ctk.CTk):
         self.tree.heading("Ürün Adı", text="Ürün Adı")
         self.tree.heading("Maliyet", text="Mal. (TL)  [Vade Dahil]")
         self.tree.heading("Durum", text="Durum")
-        self.tree.heading("Taksit", text="Taksit (Ö/T)")
+        self.tree.heading("Taksit", text="Ödeme")
         
         self.tree.column("ID", width=30, anchor="center")
         self.tree.column("Kategori", width=120, anchor="center")
@@ -371,7 +430,7 @@ class App(ctk.CTk):
                 ikon = "Bekliyor"
                 bekleyen_h += fyt 
             
-            taksit_str = f"{ot}/{ts}" if ts > 1 else "Peşin"
+            taksit_str = f"{ot}/{ts}" if ts >= 2 else "Nakit"
             tag = "evenrow" if count % 2 == 0 else "oddrow"
             
             self.tree.insert("", "end", values=(uid, kat, ad, f"{toplam_maliyet:.2f}", ikon, taksit_str, link, ts, vf, ot, fyt), tags=(tag,))
@@ -425,12 +484,17 @@ class App(ctk.CTk):
     def verileri_ice_aktar(self):
         dosya_yolu = filedialog.askopenfilename(filetypes=[("Excel ve CSV Dosyaları", "*.xlsx *.csv")], title="İçe Aktarılacak Dosyayı Seçin")
         if not dosya_yolu: return
-        
+
+        dosya_boyutu = os.path.getsize(dosya_yolu)
+        if dosya_boyutu > 10 * 1024 * 1024:
+            messagebox.showerror("Hata", "Dosya boyutu 10MB'ı aşıyor! Lütfen daha küçük bir dosya seçin.")
+            return
+
         try:
             if dosya_yolu.endswith(".csv"):
-                df = pd.read_csv(dosya_yolu)
+                df = pd.read_csv(dosya_yolu, nrows=10000)
             else:
-                df = pd.read_excel(dosya_yolu)
+                df = pd.read_excel(dosya_yolu, nrows=10000)
         except Exception as e:
             messagebox.showerror("Hata", f"Dosya okunurken hata oluştu:\n{e}")
             return
@@ -568,19 +632,40 @@ class App(ctk.CTk):
         e_link.insert(0, str(link) if str(link) != "None" else "")
         e_link.pack(pady=2)
 
-        ctk.CTkLabel(popup, text="Taksit Sayısı / Vade Farkı (TL) / Ödenen Taksit").pack(pady=(10,2))
-        
-        fin_frame = ctk.CTkFrame(popup, fg_color="transparent")
-        fin_frame.pack(pady=2)
-        e_ts = ctk.CTkEntry(fin_frame, width=60)
-        e_ts.insert(0, str(ts))
-        e_ts.pack(side="left", padx=2)
-        e_vf = ctk.CTkEntry(fin_frame, width=60)
+        ctk.CTkLabel(popup, text="Ödeme Şekli:").pack(pady=(10, 2))
+
+        odeme_var_p = ctk.StringVar(value="taksitli" if int(ts) >= 2 else "nakit")
+
+        odeme_frame_p = ctk.CTkFrame(popup, fg_color="transparent")
+        odeme_frame_p.pack(pady=2)
+
+        taksit_frame_p = ctk.CTkFrame(popup, fg_color="transparent")
+
+        def toggle_popup_taksit():
+            if odeme_var_p.get() == "taksitli":
+                taksit_frame_p.pack(pady=5)
+            else:
+                taksit_frame_p.pack_forget()
+
+        ctk.CTkRadioButton(odeme_frame_p, text="Nakit", variable=odeme_var_p, value="nakit", command=toggle_popup_taksit).pack(side="left", padx=(0, 20))
+        ctk.CTkRadioButton(odeme_frame_p, text="Taksitli", variable=odeme_var_p, value="taksitli", command=toggle_popup_taksit).pack(side="left")
+
+        ctk.CTkLabel(taksit_frame_p, text="Taksit Sayısı:").grid(row=0, column=0, padx=10, pady=5, sticky="e")
+        e_ts = ctk.CTkEntry(taksit_frame_p, width=80)
+        e_ts.insert(0, str(ts) if int(ts) >= 2 else "")
+        e_ts.grid(row=0, column=1, padx=10, pady=5)
+
+        ctk.CTkLabel(taksit_frame_p, text="Vade Farkı (TL):").grid(row=1, column=0, padx=10, pady=5, sticky="e")
+        e_vf = ctk.CTkEntry(taksit_frame_p, width=80)
         e_vf.insert(0, str(vf))
-        e_vf.pack(side="left", padx=2)
-        e_ot = ctk.CTkEntry(fin_frame, width=60)
+        e_vf.grid(row=1, column=1, padx=10, pady=5)
+
+        ctk.CTkLabel(taksit_frame_p, text="Ödenen Taksit:").grid(row=2, column=0, padx=10, pady=5, sticky="e")
+        e_ot = ctk.CTkEntry(taksit_frame_p, width=80)
         e_ot.insert(0, str(ot))
-        e_ot.pack(side="left", padx=2)
+        e_ot.grid(row=2, column=1, padx=10, pady=5)
+
+        toggle_popup_taksit()
 
         def kaydet():
             k = e_kat.get().strip()
@@ -588,13 +673,22 @@ class App(ctk.CTk):
             f = e_fyt.get().strip()
             d = c_drm.get()
             l = e_link.get().strip()
-            
+
             try:
                 f_float = float(f.replace(',', '.'))
-                ts_val = int(e_ts.get().strip())
-                vf_val = float(e_vf.get().strip().replace(',', '.'))
-                ot_val = int(e_ot.get().strip())
-                
+
+                if odeme_var_p.get() == "nakit":
+                    ts_val = 0
+                    vf_val = 0.0
+                    ot_val = 0
+                else:
+                    ts_val = int(e_ts.get().strip())
+                    vf_val = float(e_vf.get().strip().replace(',', '.'))
+                    ot_val = int(e_ot.get().strip())
+                    if ts_val < 2:
+                        messagebox.showerror("Hata", "Taksit sayısı en az 2 olmalıdır!")
+                        return
+
                 database.urun_guncelle(uid, k, a, f_float, d, l, taksit_sayisi=ts_val, vade_farki=vf_val, odenen_taksit=ot_val)
                 popup.destroy()
                 self.load_treeview_data()
@@ -614,22 +708,24 @@ class App(ctk.CTk):
         gfx_frame = ctk.CTkFrame(self.main_frame, fg_color="transparent")
         gfx_frame.grid(row=1, column=0, sticky="nsew", padx=20, pady=10)
         
-        con = sqlite3.connect("data/urunler.db")
-        df = pd.read_sql("SELECT id, kategori, urun_adi, fiyat, durum FROM urunler", con)
+        con = sqlite3.connect(database.DB_PATH)
+        df = pd.read_sql("SELECT id, kategori, urun_adi, fiyat, durum, vade_farki FROM urunler", con)
         con.close()
-        
+
         if df.empty:
             lbl_bos = ctk.CTkLabel(gfx_frame, text="Henüz analiz edilecek veri yok.", text_color="gray", font=ctk.CTkFont(size=14))
             lbl_bos.pack(pady=50)
             return
-            
+
         try:
-            df['toplam_maliyet'] = df['fiyat'] + df.get('vade_farki', 0.0)
+            df['vade_farki'] = df['vade_farki'].fillna(0.0)
+            df['toplam_maliyet'] = df['fiyat'] + df['vade_farki']
             ozet = df.groupby('kategori')['toplam_maliyet'].sum()
-            
-            df_harcanan = df[df['durum'].str.upper().str.contains('E|A')].copy()
+
+            durumlar = df['durum'].str.upper().str.strip()
+            df_harcanan = df[durumlar.isin(['E', 'EVET', 'ALINDI'])].copy()
             if not df_harcanan.empty:
-                df_harcanan['toplam_maliyet'] = df_harcanan['fiyat'] + df_harcanan.get('vade_farki', 0.0)
+                df_harcanan['toplam_maliyet'] = df_harcanan['fiyat'] + df_harcanan['vade_farki']
                 df_harcanan['kumulatif'] = df_harcanan['toplam_maliyet'].cumsum()
             
             plt.style.use('dark_background')
@@ -808,7 +904,7 @@ class App(ctk.CTk):
             genai.configure(api_key=api_key)
             model = genai.GenerativeModel('gemini-1.5-flash')
             
-            con = sqlite3.connect("data/urunler.db")
+            con = sqlite3.connect(database.DB_PATH)
             df = pd.read_sql("SELECT kategori, urun_adi, fiyat, durum FROM urunler", con)
             con.close()
             
@@ -998,26 +1094,6 @@ class App(ctk.CTk):
             
         ctk.CTkButton(popup, text="Sisteme Kaydet", fg_color="#1B5E20", command=kaydet).pack(pady=20)
 
-    def show_harita_frame(self):
-        self.clear_main_frame()
-        self.main_frame.grid_rowconfigure(1, weight=1)
-        self.main_frame.grid_columnconfigure(0, weight=1)
-        
-        lbl_baslik = ctk.CTkLabel(self.main_frame, text="PROJE GELİŞİM RAPORU & GÖREV YOL HARİTASI", font=ctk.CTkFont(size=24, weight="bold"), text_color="#81D4FA")
-        lbl_baslik.grid(row=0, column=0, pady=10)
-        
-        txt_harita = ctk.CTkTextbox(self.main_frame, font=ctk.CTkFont(size=14), fg_color="#181818", text_color="#E0E0E0")
-        txt_harita.grid(row=1, column=0, padx=20, pady=10, sticky="nsew")
-        
-        try:
-            with open("PROJE_RAPORU_VE_GELISIM.md", "r", encoding="utf-8") as f:
-                icerik = f.read()
-            txt_harita.insert("0.0", icerik)
-        except Exception:
-            txt_harita.insert("0.0", "[!] PROJE_RAPORU_VE_GELISIM.md dosyası bulunamadı.")
-            
-        txt_harita.configure(state="disabled")
-
 def baslat_kurulum_modu():
     import shutil, subprocess
     
@@ -1029,7 +1105,7 @@ def baslat_kurulum_modu():
     ctk.CTkLabel(kur_app, text="BütçeM Kurulumu", font=ctk.CTkFont(size=22, weight="bold"), text_color="#2196F3").pack(pady=15)
     ctk.CTkLabel(kur_app, text="Bu sihirbaz uygulamayı sisteminize entegre edip kuracaktır.\nLütfen kurulum dizinini ve seçeneklerinizi belirleyin:", text_color="gray").pack(pady=5)
     
-    appdata_def = os.path.join(os.getenv("APPDATA") or os.path.expanduser("~"), "UrunTakipSistemi")
+    appdata_def = os.path.join(os.getenv("APPDATA") or os.path.expanduser("~"), "ButceM")
     
     frame_path = ctk.CTkFrame(kur_app, fg_color="transparent")
     frame_path.pack(pady=10, fill="x", padx=40)
@@ -1044,7 +1120,7 @@ def baslat_kurulum_modu():
         from tkinter import filedialog
         d = filedialog.askdirectory(title="Kurulum Klasörünü Seçin", initialdir=os.path.dirname(appdata_def))
         if d:
-            hedef = os.path.join(d, "UrunTakipSistemi") if not d.lower().endswith("uruntakipsistemi") else d
+            hedef = os.path.join(d, "ButceM") if not d.lower().endswith("butcem") else d
             e_path.delete(0, 'end')
             e_path.insert(0, hedef)
             
@@ -1105,13 +1181,18 @@ araştırmalarınızı tek bir ekranda birleştiren kapsamlı bir araçtır.
   "Web'den Bul" sekmesinde tarayabilirsiniz.
 - Hoşunuza giden bir sonucu "Hızlı Kayıt" seçeneğiyle doğrudan veritabanınıza kaydedebilirsiniz.
 
-Geliştirici Sürümü: V1.0 - Tüm Hakları Saklıdır.
+Geliştirici Sürümü: V2.1 - Tüm Hakları Saklıdır.
 -----------------------------------------------------------"""
             kilavuz_yolu = os.path.join(install_dir, "Kullanim_Kilavuzu.txt")
             with open(kilavuz_yolu, "w", encoding="utf-8") as kf:
                 kf.write(kilavuz)
             
             
+            # Marker dosya oluştur
+            marker_path = os.path.join(install_dir, ".butcem_installed")
+            if not os.path.exists(marker_path):
+                open(marker_path, 'w').close()
+
             # Kendini asıl dizine kopyala
             shutil.copy2(current_exe, target_path)
             
@@ -1136,7 +1217,7 @@ Geliştirici Sürümü: V1.0 - Tüm Hakları Saklıdır.
             with open(vbs_path, "w", encoding="utf-16-le") as f:
                 f.write("\ufeff" + "\n".join(vbs_lines))
                 
-            subprocess.call(f'cscript //nologo "{vbs_path}"', shell=True)
+            subprocess.call(['cscript', '//nologo', vbs_path])
             if os.path.exists(vbs_path): os.remove(vbs_path)
             
             messagebox.showinfo("Kurulum Tamamlandı", "Yazılım bilgisayarınıza kalıcı olarak kuruldu!\nKısayollardan uygulamanızı dilediğiniz zaman başlatabilirsiniz. \n\nNot: İndirdiğiniz bu Kurulum dosyasını artık silebilirsiniz.")
@@ -1155,16 +1236,15 @@ Geliştirici Sürümü: V1.0 - Tüm Hakları Saklıdır.
 
 if __name__ == "__main__":
     import sys
-    # Uygulama EXE olarak derlenmişse "UrunTakipSistemi" adlı klasörde olup olmadığı kontrol ediliyor.
-    # Kullanıcının seçtiği hedef dizin (UrunTakipSistemi) klasörünün içinde değilsek Installer modu tetiklenir:
     if getattr(sys, 'frozen', False):
         current_dir = os.path.dirname(os.path.abspath(sys.executable))
+        # Marker dosya veya klasör adı kontrolü
+        marker = os.path.join(current_dir, ".butcem_installed")
         dir_name = os.path.basename(current_dir).lower()
-        
-        if dir_name != "uruntakipsistemi":
+
+        if dir_name != "butcem" and not os.path.exists(marker):
             baslat_kurulum_modu()
             sys.exit(0)
 
-    # UrunTakipSistemi içerisindeyse veya script (python) olarak çalışıyorsa doğrudan başlat:
     app = App()
     app.mainloop()
