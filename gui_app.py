@@ -3,6 +3,8 @@ import customtkinter as ctk
 from tkinter import ttk, messagebox
 import pandas as pd
 import matplotlib.pyplot as plt
+from matplotlib.figure import Figure
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from dotenv import load_dotenv
 import database
 import sqlite3
@@ -29,7 +31,7 @@ ctk.set_default_color_theme("blue")
 class App(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title("Ürün Takip Sistemi - Masaüstü Asistanı")
+        self.title("BütçeM - Masaüstü Asistanı")
         self.geometry("1000x700")
 
         self.grid_rowconfigure(0, weight=1)
@@ -40,7 +42,7 @@ class App(ctk.CTk):
         self.sidebar_frame.grid(row=0, column=0, sticky="nsew")
         self.sidebar_frame.grid_rowconfigure(5, weight=1)
         
-        self.logo_label = ctk.CTkLabel(self.sidebar_frame, text="ÜRÜN TAKİP", font=ctk.CTkFont(size=20, weight="bold"))
+        self.logo_label = ctk.CTkLabel(self.sidebar_frame, text="BütçeM", font=ctk.CTkFont(size=20, weight="bold"))
         self.logo_label.grid(row=0, column=0, padx=20, pady=(20, 30))
         
         self.btn_ekle = ctk.CTkButton(self.sidebar_frame, text="➕ 1. Parça Ekle", command=self.show_ekle_frame)
@@ -816,8 +818,8 @@ class App(ctk.CTk):
                 
             ozet = df.groupby('kategori')['fiyat'].sum()
             durumlar = df['durum'].str.upper().str.strip()
-            harcanan = df[durumlar.str.startswith('E|A')]['fiyat'].sum()
-            bekleyen = df[~durumlar.str.startswith('E|A')]['fiyat'].sum()
+            harcanan = df[durumlar.isin(['E', 'EVET', 'ALINDI'])]['fiyat'].sum()
+            bekleyen = df[~durumlar.isin(['E', 'EVET', 'ALINDI'])]['fiyat'].sum()
             
             masked_str = ""
             for idx, row in df.iterrows():
@@ -1020,11 +1022,11 @@ def baslat_kurulum_modu():
     import shutil, subprocess
     
     kur_app = ctk.CTk()
-    kur_app.title("Ürün Takip Sistemi - Kurulum Sihirbazı")
+    kur_app.title("BütçeM - Kurulum Sihirbazı")
     kur_app.geometry("550x450")
     kur_app.eval('tk::PlaceWindow . center')
     
-    ctk.CTkLabel(kur_app, text="Ürün Takip Sistemi Kurulumu", font=ctk.CTkFont(size=22, weight="bold"), text_color="#2196F3").pack(pady=15)
+    ctk.CTkLabel(kur_app, text="BütçeM Kurulumu", font=ctk.CTkFont(size=22, weight="bold"), text_color="#2196F3").pack(pady=15)
     ctk.CTkLabel(kur_app, text="Bu sihirbaz uygulamayı sisteminize entegre edip kuracaktır.\nLütfen kurulum dizinini ve seçeneklerinizi belirleyin:", text_color="gray").pack(pady=5)
     
     appdata_def = os.path.join(os.getenv("APPDATA") or os.path.expanduser("~"), "UrunTakipSistemi")
@@ -1065,12 +1067,12 @@ def baslat_kurulum_modu():
             install_dir = os.path.normpath(e_path.get().strip())
             os.makedirs(install_dir, exist_ok=True)
             
-            target_path = os.path.join(install_dir, "Urun Takip Sistemi.exe")
+            target_path = os.path.join(install_dir, "ButceM.exe")
             current_exe = sys.executable
             
             # Kılavuz Dosyasını Üret ve Kaydet
             kilavuz = """-----------------------------------------------------------
-          ÜRÜN TAKİP SİSTEMİ - A'DAN Z'YE KULLANIM KILAVUZU
+          BütçeM - A'DAN Z'YE KULLANIM KILAVUZU
 -----------------------------------------------------------
 
 Hoş Geldiniz! Bu uygulama finansal alımlarınızı, bütçenizi ve e-ticaret 
@@ -1117,7 +1119,7 @@ Geliştirici Sürümü: V1.0 - Tüm Hakları Saklıdır.
             
             if var_desktop.get():
                 desktop = os.path.join(os.environ.get("USERPROFILE", ""), "Desktop")
-                vbs_lines.append(f'Set oLink1 = oWS.CreateShortcut("{os.path.join(desktop, "Ürün Takip Sistemi.lnk")}")')
+                vbs_lines.append(f'Set oLink1 = oWS.CreateShortcut("{os.path.join(desktop, "BütçeM.lnk")}")')
                 vbs_lines.append(f'oLink1.TargetPath = "{target_path}"')
                 vbs_lines.append(f'oLink1.WorkingDirectory = "{install_dir}"')
                 vbs_lines.append('oLink1.Save')
@@ -1125,14 +1127,14 @@ Geliştirici Sürümü: V1.0 - Tüm Hakları Saklıdır.
             if var_startmenu.get():
                 appdata_system = os.getenv("APPDATA") or os.path.expanduser("~")
                 programs = os.path.join(appdata_system, "Microsoft", "Windows", "Start Menu", "Programs")
-                vbs_lines.append(f'Set oLink2 = oWS.CreateShortcut("{os.path.join(programs, "Ürün Takip Sistemi.lnk")}")')
+                vbs_lines.append(f'Set oLink2 = oWS.CreateShortcut("{os.path.join(programs, "BütçeM.lnk")}")')
                 vbs_lines.append(f'oLink2.TargetPath = "{target_path}"')
                 vbs_lines.append(f'oLink2.WorkingDirectory = "{install_dir}"')
                 vbs_lines.append('oLink2.Save')
                 
             vbs_path = os.path.join(install_dir, "create_shortcuts.vbs")
-            with open(vbs_path, "w", encoding="utf-8") as f:
-                f.write("\n".join(vbs_lines))
+            with open(vbs_path, "w", encoding="utf-16-le") as f:
+                f.write("\ufeff" + "\n".join(vbs_lines))
                 
             subprocess.call(f'cscript //nologo "{vbs_path}"', shell=True)
             if os.path.exists(vbs_path): os.remove(vbs_path)

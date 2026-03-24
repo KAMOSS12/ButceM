@@ -25,9 +25,16 @@ wheels/
 venv/
 .env
 
-# Project Specific
+# Project Data (personal)
 data/
-config/
 *.db
+
+# Build Artifacts
 *.spec
-TUM_YAPILANLAR_OZET.md
+
+# IDE
+.vscode/
+.idea/
+
+# Claude
+.claude/
