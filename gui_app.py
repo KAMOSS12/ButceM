@@ -7,9 +7,9 @@ from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from dotenv import load_dotenv
 import database
-import sqlite3
+import profile_manager
 
-__version__ = "2.1.0"
+__version__ = "2.2.0"
 import currency
 import threading
 import webbrowser
@@ -30,43 +30,67 @@ load_dotenv()
 ctk.set_appearance_mode("Dark")
 ctk.set_default_color_theme("blue")
 
+
+def treeview_sort_column(tree, col, reverse):
+    """Treeview kolon başlığına tıklayınca sırala."""
+    data = [(tree.set(child, col), child) for child in tree.get_children('')]
+    try:
+        data.sort(key=lambda t: float(str(t[0]).replace(',', '.')), reverse=reverse)
+    except (ValueError, TypeError):
+        data.sort(key=lambda t: str(t[0]).lower(), reverse=reverse)
+    for index, (val, child) in enumerate(data):
+        tree.move(child, '', index)
+    tree.heading(col, command=lambda: treeview_sort_column(tree, col, not reverse))
+
+
 class App(ctk.CTk):
     def __init__(self):
         super().__init__()
         self.title("BütçeM - Masaüstü Asistanı")
-        self.geometry("1000x700")
+        self.geometry("1050x700")
 
         self.grid_rowconfigure(0, weight=1)
         self.grid_columnconfigure(1, weight=1)
-        
+
+        self.current_profile = ""
+        self.backup_manager = None
+        self.notification_manager = None
+        self.price_tracker = None
+
         # --- SOL MENÜ (SIDEBAR) ---
         self.sidebar_frame = ctk.CTkFrame(self, width=200, corner_radius=0)
         self.sidebar_frame.grid(row=0, column=0, sticky="nsew")
-        self.sidebar_frame.grid_rowconfigure(5, weight=1)
-        
+        self.sidebar_frame.grid_rowconfigure(7, weight=1)
+
         self.logo_label = ctk.CTkLabel(self.sidebar_frame, text="BütçeM", font=ctk.CTkFont(size=20, weight="bold"))
-        self.logo_label.grid(row=0, column=0, padx=20, pady=(20, 30))
-        
+        self.logo_label.grid(row=0, column=0, padx=20, pady=(20, 5))
+
+        self.lbl_profil = ctk.CTkLabel(self.sidebar_frame, text="", text_color="#81D4FA", font=ctk.CTkFont(size=11))
+        self.lbl_profil.grid(row=1, column=0, padx=20, pady=(0, 15))
+
         self.btn_ekle = ctk.CTkButton(self.sidebar_frame, text="➕ 1. Parça Ekle", command=self.show_ekle_frame)
-        self.btn_ekle.grid(row=1, column=0, padx=20, pady=10)
-        
+        self.btn_ekle.grid(row=2, column=0, padx=20, pady=10)
+
         self.btn_liste = ctk.CTkButton(self.sidebar_frame, text="📃 2. Liste & CRUD", command=self.show_liste_frame)
-        self.btn_liste.grid(row=2, column=0, padx=20, pady=10)
-        
+        self.btn_liste.grid(row=3, column=0, padx=20, pady=10)
+
         self.btn_grafik = ctk.CTkButton(self.sidebar_frame, text="📊 3. Dashboard", fg_color="#00695C", hover_color="#004D40", command=self.show_dashboard_frame)
-        self.btn_grafik.grid(row=3, column=0, padx=20, pady=10)
-        
+        self.btn_grafik.grid(row=4, column=0, padx=20, pady=10)
+
         self.btn_ai = ctk.CTkButton(self.sidebar_frame, text="🤖 4. Yapay Zeka", fg_color="#6A1B9A", hover_color="#4A148C", command=self.show_ai_frame)
-        self.btn_ai.grid(row=4, column=0, padx=20, pady=10)
+        self.btn_ai.grid(row=5, column=0, padx=20, pady=10)
 
         self.btn_web = ctk.CTkButton(self.sidebar_frame, text="🌐 5. Web'den Bul", fg_color="#FBC02D", text_color="black", hover_color="#F57F17", command=self.show_web_frame)
-        self.btn_web.grid(row=5, column=0, padx=20, pady=10)
+        self.btn_web.grid(row=6, column=0, padx=20, pady=10)
 
-        self.btn_ayarlar = ctk.CTkButton(self.sidebar_frame, text="⚙️ 6. Sistem Ayarları", fg_color="#37474F", hover_color="#263238", command=self.show_ayarlar_frame)
-        self.btn_ayarlar.grid(row=6, column=0, padx=20, pady=10)
+        self.btn_fiyat_takip = ctk.CTkButton(self.sidebar_frame, text="🔔 6. Fiyat Takip", fg_color="#E65100", hover_color="#BF360C", command=self.show_fiyat_takip_frame)
+        self.btn_fiyat_takip.grid(row=7, column=0, padx=20, pady=10)
+
+        self.btn_ayarlar = ctk.CTkButton(self.sidebar_frame, text="⚙️ 7. Sistem Ayarları", fg_color="#37474F", hover_color="#263238", command=self.show_ayarlar_frame)
+        self.btn_ayarlar.grid(row=8, column=0, padx=20, pady=10)
 
         self.lbl_kur = ctk.CTkLabel(self.sidebar_frame, text="Kurlar Yükleniyor...", text_color="#A5D6A7", font=ctk.CTkFont(size=12))
-        self.lbl_kur.grid(row=7, column=0, pady=20)
+        self.lbl_kur.grid(row=9, column=0, pady=20)
 
         self.usd_rate = 0.0
 
@@ -75,29 +99,93 @@ class App(ctk.CTk):
         self.main_frame.grid_rowconfigure(2, weight=1)
         self.main_frame.grid_columnconfigure(0, weight=1)
 
-        database.init_db()
-        database.migrate_from_csv()
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
 
-        self.withdraw() 
+        self.withdraw()
+        self._init_profiles_and_login()
+
+    def _init_profiles_and_login(self):
+        """Profil sistemini başlat ve login ekranını göster."""
+        profile_manager.ensure_profiles_exist()
         self.show_login_screen()
+
+    def _on_close(self):
+        """Uygulama kapanışında arka plan görevlerini durdur."""
+        if self.backup_manager:
+            self.backup_manager.stop_scheduled()
+        if self.notification_manager:
+            self.notification_manager.stop_periodic_checks()
+        if self.price_tracker:
+            self.price_tracker.stop_periodic_checks()
+        self.destroy()
 
     def show_login_screen(self):
         login = ctk.CTkToplevel(self)
-        login.title("Sistem Girişi")
-        login.geometry("300x200")
+        login.title("BütçeM - Giriş")
+        login.geometry("350x320")
         login.resizable(False, False)
-        
+
         login.protocol("WM_DELETE_WINDOW", self.destroy)
 
-        ctk.CTkLabel(login, text="Uygulama PIN Kodu:", font=ctk.CTkFont(size=14, weight="bold")).pack(pady=(25, 10))
+        ctk.CTkLabel(login, text="Profil Seçin:", font=ctk.CTkFont(size=14, weight="bold")).pack(pady=(20, 10))
+
+        profiles = profile_manager.list_profiles()
+        profile_names = [p["name"] for p in profiles]
+        last_active = profile_manager.get_last_active_profile()
+
+        self.login_profile_var = ctk.StringVar(value=last_active if last_active else (profile_names[0] if profile_names else ""))
+        profile_combo = ctk.CTkComboBox(login, values=profile_names, variable=self.login_profile_var, width=200)
+        profile_combo.pack(pady=5)
+
+        btn_new_profile = ctk.CTkButton(login, text="+ Yeni Profil", width=120, fg_color="#455A64",
+                                        command=lambda: self._create_profile_popup(login, profile_combo))
+        btn_new_profile.pack(pady=5)
+
+        ctk.CTkLabel(login, text="PIN Kodu:", font=ctk.CTkFont(size=14, weight="bold")).pack(pady=(15, 5))
         self.pin_entry = ctk.CTkEntry(login, show="*", width=150, justify="center")
         self.pin_entry.pack(pady=5)
         self.pin_entry.bind('<Return>', lambda e: self.check_pin(login))
 
         ctk.CTkButton(login, text="GİRİŞ YAP", command=lambda: self.check_pin(login)).pack(pady=10)
-        
+
         self.login_lbl = ctk.CTkLabel(login, text="Varsayılan PIN: 1234", text_color="gray", font=ctk.CTkFont(size=11))
         self.login_lbl.pack()
+
+    def _create_profile_popup(self, login_win, combo):
+        popup = ctk.CTkToplevel(login_win)
+        popup.title("Yeni Profil")
+        popup.geometry("300x220")
+        popup.transient(login_win)
+        popup.grab_set()
+
+        ctk.CTkLabel(popup, text="Profil Adı:").pack(pady=(15, 5))
+        e_name = ctk.CTkEntry(popup, width=200)
+        e_name.pack(pady=5)
+
+        ctk.CTkLabel(popup, text="PIN (min 4 hane):").pack(pady=5)
+        e_pin = ctk.CTkEntry(popup, width=200, show="*")
+        e_pin.pack(pady=5)
+
+        def create():
+            name = e_name.get().strip()
+            pin = e_pin.get().strip()
+            if not name:
+                messagebox.showwarning("Uyarı", "Profil adı boş olamaz.", parent=popup)
+                return
+            if len(pin) < 4:
+                messagebox.showwarning("Uyarı", "PIN en az 4 haneli olmalıdır.", parent=popup)
+                return
+            try:
+                safe_name = profile_manager.create_profile(name, pin)
+                profiles = profile_manager.list_profiles()
+                combo.configure(values=[p["name"] for p in profiles])
+                self.login_profile_var.set(safe_name)
+                popup.destroy()
+                messagebox.showinfo("Başarılı", f"'{safe_name}' profili oluşturuldu!", parent=login_win)
+            except ValueError as ve:
+                messagebox.showerror("Hata", str(ve), parent=popup)
+
+        ctk.CTkButton(popup, text="Oluştur", fg_color="#1B5E20", command=create).pack(pady=15)
 
     def check_pin(self, login_win):
         if not hasattr(self, '_pin_attempts'):
@@ -110,23 +198,39 @@ class App(ctk.CTk):
             self.login_lbl.configure(text=f"Çok fazla hatalı deneme! {kalan}sn bekleyin.", text_color="#FF5252")
             return
 
+        selected_profile = self.login_profile_var.get().strip()
+        if not selected_profile:
+            self.login_lbl.configure(text="Lütfen bir profil seçin.", text_color="#FF5252")
+            return
+
+        settings = profile_manager.load_profile_settings(selected_profile)
+        correct_pin = settings.get("pin_hash", "")
+
+        if not correct_pin or len(correct_pin) != 64:
+            correct_pin = hashlib.sha256("1234".encode("utf-8")).hexdigest()
+
         p = self.pin_entry.get()
-        correct_pin = os.getenv("APP_PIN", "1234")
-
-        if len(correct_pin) != 64:
-            new_hash = hashlib.sha256(correct_pin.encode("utf-8")).hexdigest()
-            os.environ["APP_PIN"] = new_hash
-            env_file = ".env"
-            if not os.path.exists(env_file):
-                open(env_file, 'a').close()
-            set_key(env_file, "APP_PIN", new_hash)
-            correct_pin = new_hash
-
         input_hash = hashlib.sha256(p.encode("utf-8")).hexdigest()
 
         if input_hash == correct_pin:
             self._pin_attempts = 0
+            self.current_profile = selected_profile
+            profile_manager.set_last_active_profile(selected_profile)
+
+            # Profil DB'yi ayarla
+            database.set_db_path(profile_manager.get_profile_db_path(selected_profile))
+            database.init_db()
+            database.migrate_from_csv()
+
+            # Tema uygula
+            theme = settings.get("theme", "Dark")
+            ctk.set_appearance_mode(theme)
+
+            # Arka plan yöneticilerini başlat
+            self._start_background_managers(settings)
+
             login_win.destroy()
+            self.lbl_profil.configure(text=f"[{selected_profile}]")
             self.deiconify()
             self.load_currency()
             self.show_liste_frame()
@@ -143,6 +247,27 @@ class App(ctk.CTk):
                 self.login_lbl.configure(text=f"Hatalı PIN! ({self._pin_attempts}/5 deneme)", text_color="#FF5252")
         self.pin_entry.delete(0, 'end')
 
+    def _start_background_managers(self, settings):
+        """Yedekleme, bildirim ve fiyat takip yöneticilerini başlat."""
+        import backup_manager as bm
+        import notification_manager as nm
+        import price_tracker as pt
+
+        # Yedekleme
+        self.backup_manager = bm.BackupManager(self.current_profile, settings.get("backup", {}))
+        if settings.get("backup", {}).get("enabled", False):
+            self.backup_manager.start_scheduled()
+
+        # Bildirimler
+        notif_settings = settings.get("notifications", {})
+        notif_settings["monthly_budget"] = settings.get("monthly_budget", 0)
+        self.notification_manager = nm.NotificationManager(self.current_profile, notif_settings, database)
+        self.notification_manager.run_startup_checks()
+
+        # Fiyat takip
+        self.price_tracker = pt.PriceTracker(notification_manager=self.notification_manager)
+        self.price_tracker.start_periodic_checks()
+
     def start_autolock(self):
         self.last_activity = time.time()
         self.bind_all("<Motion>", self.reset_timer)
@@ -156,7 +281,7 @@ class App(ctk.CTk):
     def check_autolock(self):
         if not hasattr(self, 'is_locked') or self.is_locked:
             return
-        if time.time() - self.last_activity > 300: # 5 Dakika Inaktivite
+        if time.time() - self.last_activity > 300:
             self.is_locked = True
             self.withdraw()
             self.show_login_screen()
@@ -187,6 +312,8 @@ class App(ctk.CTk):
         for widget in self.main_frame.winfo_children():
             widget.destroy()
 
+    # ─── PARÇA EKLE ───────────────────────────────────────────────────
+
     def show_ekle_frame(self):
         self.clear_main_frame()
         self.main_frame.grid_rowconfigure(1, weight=0)
@@ -195,15 +322,15 @@ class App(ctk.CTk):
 
         lbl_kat = ctk.CTkLabel(self.main_frame, text="Kategori:")
         lbl_kat.grid(row=1, column=0, padx=20, pady=15, sticky="e")
-        
+
         try:
             mevcut_kategoriler = list(set([r[1] for r in database.urunleri_getir()]))
         except Exception:
             mevcut_kategoriler = []
-            
+
         if not mevcut_kategoriler:
             mevcut_kategoriler = ["Elektronik", "Giyim", "Market", "Ev Aletleri", "Hobi"]
-            
+
         self.entry_kat = ctk.CTkComboBox(self.main_frame, width=250, values=mevcut_kategoriler)
         self.entry_kat.set("")
         self.entry_kat.grid(row=1, column=1, padx=20, pady=15, sticky="w")
@@ -315,6 +442,8 @@ class App(ctk.CTk):
         self.entry_taksit.delete(0, 'end')
         self.entry_vade.delete(0, 'end')
 
+    # ─── LİSTE & CRUD ────────────────────────────────────────────────
+
     def show_liste_frame(self):
         self.clear_main_frame()
         self.main_frame.grid_rowconfigure(2, weight=1)
@@ -323,31 +452,28 @@ class App(ctk.CTk):
         lbl_baslik = ctk.CTkLabel(self.main_frame, text="ENVANTER VE FİNANSAL ÖZET", font=ctk.CTkFont(size=24, weight="bold"))
         lbl_baslik.grid(row=0, column=0, pady=10)
 
-        # Filtreleme / Arama Çubuğu
         filtre_frame = ctk.CTkFrame(self.main_frame, fg_color="transparent")
         filtre_frame.grid(row=1, column=0, pady=10, sticky="ew")
-        
+
         lbl_ara = ctk.CTkLabel(filtre_frame, text="Ürün Ara:")
         lbl_ara.pack(side="left", padx=5)
         self.entry_ara = ctk.CTkEntry(filtre_frame, width=150)
         self.entry_ara.pack(side="left", padx=5)
-        
+
         lbl_filtre_kat = ctk.CTkLabel(filtre_frame, text="Kategori Filtre:")
         lbl_filtre_kat.pack(side="left", padx=(20, 5))
-        
-        # Kategorileri çek
+
         rows = database.urunleri_getir()
         kategoriler = list(set([r[1] for r in rows]))
         kategoriler.insert(0, "Tümü")
-        
+
         self.combo_kat = ctk.CTkOptionMenu(filtre_frame, values=kategoriler)
         self.combo_kat.pack(side="left", padx=5)
         self.combo_kat.set("Tümü")
-        
+
         btn_ara = ctk.CTkButton(filtre_frame, text="Filtrele", width=80, command=self.load_treeview_data)
         btn_ara.pack(side="left", padx=10)
 
-        # Tablo Alanı (Treeview)
         style = ttk.Style()
         style.theme_use("default")
         style.configure("Treeview", background="#2a2d2e", foreground="white", rowheight=25, fieldbackground="#2a2d2e", borderwidth=0)
@@ -358,39 +484,34 @@ class App(ctk.CTk):
         self.tree = ttk.Treeview(self.main_frame, columns=("ID", "Kategori", "Ürün Adı", "Maliyet", "Durum", "Taksit"), show="headings", height=15)
         self.tree.tag_configure("oddrow", background="#2a2d2e")
         self.tree.tag_configure("evenrow", background="#343638")
-        
-        self.tree.heading("ID", text="ID")
-        self.tree.heading("Kategori", text="Kategori")
-        self.tree.heading("Ürün Adı", text="Ürün Adı")
-        self.tree.heading("Maliyet", text="Mal. (TL)  [Vade Dahil]")
-        self.tree.heading("Durum", text="Durum")
-        self.tree.heading("Taksit", text="Ödeme")
-        
+
+        # Bug 9: Kolon sıralama desteği
+        for col_id, col_text in [("ID", "ID"), ("Kategori", "Kategori"), ("Ürün Adı", "Ürün Adı"),
+                                  ("Maliyet", "Mal. (TL) [Vade Dahil]"), ("Durum", "Durum"), ("Taksit", "Ödeme")]:
+            self.tree.heading(col_id, text=col_text, command=lambda c=col_id: treeview_sort_column(self.tree, c, False))
+
         self.tree.column("ID", width=30, anchor="center")
         self.tree.column("Kategori", width=120, anchor="center")
         self.tree.column("Ürün Adı", width=200, anchor="w")
         self.tree.column("Maliyet", width=150, anchor="e")
         self.tree.column("Durum", width=100, anchor="center")
         self.tree.column("Taksit", width=100, anchor="center")
-        
+
         self.tree.grid(row=2, column=0, padx=20, pady=10, sticky="nsew")
-        
-        # Çift Tıklama (Double-Click) Binding
         self.tree.bind("<Double-1>", lambda e: self.guncelle_popup())
 
-        # CRUD Butonları
         btn_frame = ctk.CTkFrame(self.main_frame, fg_color="transparent")
         btn_frame.grid(row=3, column=0, pady=10)
-        
+
         btn_guncelle = ctk.CTkButton(btn_frame, text="Seçilini Güncelle", fg_color="#F57C00", hover_color="#E65100", command=self.guncelle_popup)
         btn_guncelle.pack(side="left", padx=10)
-        
+
         btn_sil = ctk.CTkButton(btn_frame, text="Seçilini Sil", fg_color="#D32F2F", hover_color="#C62828", command=self.sil_kayit)
         btn_sil.pack(side="left", padx=10)
 
         btn_link = ctk.CTkButton(btn_frame, text="📍 Linke Git", fg_color="#1976D2", hover_color="#1565C0", command=self.linke_git)
         btn_link.pack(side="left", padx=10)
-        
+
         btn_export = ctk.CTkButton(btn_frame, text="📊 Excel'e Aktar", fg_color="#2E7D32", hover_color="#1B5E20", command=self.excel_disa_aktar)
         btn_export.pack(side="left", padx=10)
 
@@ -399,18 +520,18 @@ class App(ctk.CTk):
 
         self.lbl_ozet = ctk.CTkLabel(self.main_frame, text="", font=ctk.CTkFont(size=14))
         self.lbl_ozet.grid(row=4, column=0, pady=10)
-        
+
         self.load_treeview_data()
 
     def load_treeview_data(self):
         for item in self.tree.get_children():
             self.tree.delete(item)
-            
+
         arama = self.entry_ara.get().strip()
         kategori_filtre = self.combo_kat.get()
-        
+
         rows = database.urunleri_getir(kategori_filtre=kategori_filtre, arama_filtre=arama)
-        
+
         toplam_h = 0.0
         bekleyen_h = 0.0
         alinan_u = 0
@@ -420,7 +541,7 @@ class App(ctk.CTk):
         for row in rows:
             uid, kat, ad, fyt, drm, link, ts, vf, ot = row
             drm_upper = drm.upper()
-            
+
             toplam_maliyet = fyt + vf
             if drm_upper in ["E", "EVET"]:
                 ikon = "Alındı"
@@ -429,13 +550,13 @@ class App(ctk.CTk):
             else:
                 ikon = "Bekliyor"
                 bekleyen_h += toplam_maliyet
-            
+
             taksit_str = f"{ot}/{ts}" if ts >= 2 else "Nakit"
             tag = "evenrow" if count % 2 == 0 else "oddrow"
-            
+
             self.tree.insert("", "end", values=(uid, kat, ad, f"{toplam_maliyet:.2f}", ikon, taksit_str, link, ts, vf, ot, fyt), tags=(tag,))
             count += 1
-            
+
         all_rows = database.urunleri_getir()
         kategoriler = list(set([r[1] for r in all_rows]))
         kategoriler.insert(0, "Tümü")
@@ -445,12 +566,14 @@ class App(ctk.CTk):
         if toplam_u > 0:
             yuzde = int((alinan_u / toplam_u) * 100)
             usd_ek = ""
-            if getattr(self, "usd_rate", 0) > 0:
-                t_usd = (toplam_h + bekleyen_h) / self.usd_rate
+            # Bug 1 fix: race condition önleme
+            rate = getattr(self, "usd_rate", 0)
+            if rate > 0:
+                t_usd = (toplam_h + bekleyen_h) / rate
                 usd_ek = f" (~{t_usd:.0f} $)"
-            
+
             ozet_metin = f"Ürün: {toplam_u} Adet | Tamamlanma: %{yuzde} | Harcanan: {toplam_h:.2f} ₺ | Bekleyen: {bekleyen_h:.2f} ₺ | Toplam Bütçe: {(toplam_h + bekleyen_h):.2f} ₺{usd_ek}"
-        
+
         self.lbl_ozet.configure(text=ozet_metin)
 
     def sil_kayit(self):
@@ -458,7 +581,7 @@ class App(ctk.CTk):
         if not selected:
             messagebox.showwarning("Uyarı", "Lütfen silmek için tablodan bir kayıt seçin.")
             return
-            
+
         onay = messagebox.askyesno("Silme Onayı", "Seçili kaydı kalıcı olarak silmek istediğinize emin misiniz?")
         if onay:
             item = self.tree.item(selected[0])
@@ -471,11 +594,11 @@ class App(ctk.CTk):
         if not selected:
             messagebox.showwarning("Uyarı", "Lütfen linkine gitmek istediğiniz ürünü seçin.")
             return
-            
+
         item = self.tree.item(selected[0])
         vals = item['values']
         link = str(vals[6]) if len(vals) > 6 else ""
-        
+
         if link.startswith("http"):
             webbrowser.open(link)
         else:
@@ -505,25 +628,22 @@ class App(ctk.CTk):
             messagebox.showerror("Hata", f"Dosya okunurken hata oluştu:\n{e}")
             return
 
-        # Temel kolon denetimleri
         gerekenler = ["Kategori", "Ürün Adı", "Fiyat"]
         if not set(gerekenler).issubset(df.columns):
             messagebox.showerror("Eksik Sütun", f"Verinizde şu temel sütunlar eksik: {', '.join(gerekenler)}\nLütfen örnek '.xlsx' yapısına uyun.")
             return
-            
-        # Önizleme ve Onay Popup
+
         p = ctk.CTkToplevel(self)
         p.title("Toplu İçe Aktarma - Onay Ekranı")
         p.geometry("800x500")
         p.transient(self)
         p.grab_set()
-        
+
         ctk.CTkLabel(p, text=f"Önizleme: Toplam {len(df)} kayıt bulundu.", font=ctk.CTkFont(size=16, weight="bold")).pack(pady=10)
-        
-        # Önizleme tablosu
+
         tree_frame = ctk.CTkFrame(p)
         tree_frame.pack(fill="both", expand=True, padx=20, pady=10)
-        
+
         preview_tree = ttk.Treeview(tree_frame, columns=("Kat", "Ad", "Fyt", "Durum"), show="headings", height=10)
         preview_tree.heading("Kat", text="Kategori")
         preview_tree.heading("Ad", text="Ürün Adı")
@@ -534,49 +654,47 @@ class App(ctk.CTk):
         preview_tree.column("Fyt", width=80)
         preview_tree.column("Durum", width=80)
         preview_tree.pack(fill="both", expand=True)
-        
+
         preview_data = []
         for _, row in df.iterrows():
             kat = str(row.get('Kategori', 'Diğer'))
             ad = str(row.get('Ürün Adı', 'İsimsiz'))
             try: fyt = float(str(row.get('Fiyat', 0)).replace(',', '.'))
             except: fyt = 0.0
-            
+
             drm = str(row.get('Durum', 'Hayır'))
             link = str(row.get('Link', ''))
             ts = int(row.get('Taksit', 1)) if 'Taksit' in df.columns else 1
             vf = float(str(row.get('Vade_Farki', 0)).replace(',', '.')) if 'Vade_Farki' in df.columns else 0.0
             ot = int(row.get('Odenen_T', 0)) if 'Odenen_T' in df.columns else 0
-            
+
             preview_tree.insert("", "end", values=(kat, ad, f"{fyt:.2f}", drm))
             preview_data.append((kat, ad, fyt, drm, link, ts, vf, ot))
-            
+
         def onayla_kaydet():
             for dt in preview_data:
                 database.urun_ekle(dt[0], dt[1], dt[2], dt[3], dt[4], taksit_sayisi=dt[5], vade_farki=dt[6], odenen_taksit=dt[7])
             p.destroy()
             self.load_treeview_data()
             messagebox.showinfo("Sistem Başarılı", f"{len(preview_data)} Adet ürün veritabanına başarıyla nakledildi!")
-            
+
         ctk.CTkButton(p, text="Onayla ve Veritabanına Yaz", fg_color="#1B5E20", hover_color="#003300", command=onayla_kaydet).pack(pady=20)
 
     def excel_disa_aktar(self):
-        # Ağaçtaki görünen verileri pandas ile export eder
         rows = []
         for child in self.tree.get_children():
             item = self.tree.item(child)
             rows.append(item['values'])
-            
+
         if not rows:
             messagebox.showinfo("Bilgi", "Dışa aktarılacak veri bulunamadı.")
             return
-            
+
         columns = ["ID", "Kategori", "Ürün Adı", "Maliyet", "Durum", "Taksit", "Link", "Taksit_S", "Vade_Farki", "Odenen_T", "Fiyat"]
         df = pd.DataFrame(rows, columns=columns)
-        
-        # Sadece görünür, gerekli kolonları alalım
+
         df_export = df[["ID", "Kategori", "Ürün Adı", "Fiyat", "Vade_Farki", "Maliyet", "Taksit", "Durum", "Link"]]
-        
+
         kayit_yeri = filedialog.asksaveasfilename(defaultextension=".xlsx", filetypes=[("Excel Dosyası", "*.xlsx"), ("CSV Dosyası", "*.csv")], initialfile="Finansal_Rapor.xlsx", title="Excel'e Nereye Aktaralım?")
         if kayit_yeri:
             try:
@@ -599,20 +717,20 @@ class App(ctk.CTk):
         uid = vals[0]
         kat = vals[1]
         ad = vals[2]
-        
+
         drm = vals[4]
         link = str(vals[6]) if len(vals) > 6 else ""
         ts = vals[7] if len(vals) > 7 else 1
         vf = vals[8] if len(vals) > 8 else 0.0
         ot = vals[9] if len(vals) > 9 else 0
         fyt = vals[10] if len(vals) > 10 else 0.0
-        
+
         popup = ctk.CTkToplevel(self)
         popup.title("Kayıt Güncelle")
         popup.geometry("450x650")
         popup.transient(self)
         popup.grab_set()
-        
+
         ctk.CTkLabel(popup, text="Kategori:").pack(pady=5)
         e_kat = ctk.CTkEntry(popup, width=200)
         e_kat.insert(0, kat)
@@ -640,7 +758,12 @@ class App(ctk.CTk):
 
         ctk.CTkLabel(popup, text="Ödeme Şekli:").pack(pady=(10, 2))
 
-        odeme_var_p = ctk.StringVar(value="taksitli" if int(ts) >= 2 else "nakit")
+        # Bug 3 fix: TypeError önleme
+        try:
+            ts_int = int(ts)
+        except (ValueError, TypeError):
+            ts_int = 0
+        odeme_var_p = ctk.StringVar(value="taksitli" if ts_int >= 2 else "nakit")
 
         odeme_frame_p = ctk.CTkFrame(popup, fg_color="transparent")
         odeme_frame_p.pack(pady=2)
@@ -658,7 +781,7 @@ class App(ctk.CTk):
 
         ctk.CTkLabel(taksit_frame_p, text="Taksit Sayısı:").grid(row=0, column=0, padx=10, pady=5, sticky="e")
         e_ts = ctk.CTkEntry(taksit_frame_p, width=80)
-        e_ts.insert(0, str(ts) if int(ts) >= 2 else "")
+        e_ts.insert(0, str(ts) if ts_int >= 2 else "")
         e_ts.grid(row=0, column=1, padx=10, pady=5)
 
         ctk.CTkLabel(taksit_frame_p, text="Vade Farkı (TL):").grid(row=1, column=0, padx=10, pady=5, sticky="e")
@@ -703,18 +826,21 @@ class App(ctk.CTk):
 
         ctk.CTkButton(popup, text="Güncelle", command=kaydet, fg_color="#F57C00", hover_color="#E65100").pack(pady=20)
 
+    # ─── DASHBOARD ────────────────────────────────────────────────────
+
     def show_dashboard_frame(self):
         self.clear_main_frame()
         self.main_frame.grid_rowconfigure(1, weight=1)
         self.main_frame.grid_columnconfigure(0, weight=1)
-        
+
         lbl_baslik = ctk.CTkLabel(self.main_frame, text="📊 FİNANSAL DASHBOARD", font=ctk.CTkFont(size=24, weight="bold"), text_color="#FFCA28")
         lbl_baslik.grid(row=0, column=0, pady=10)
-        
+
         gfx_frame = ctk.CTkFrame(self.main_frame, fg_color="transparent")
         gfx_frame.grid(row=1, column=0, sticky="nsew", padx=20, pady=10)
-        
-        con = sqlite3.connect(database.DB_PATH)
+
+        # Bug 2 fix: database modülü üzerinden bağlantı
+        con = database.get_connection()
         df = pd.read_sql("SELECT id, kategori, urun_adi, fiyat, durum, vade_farki FROM urunler", con)
         con.close()
 
@@ -733,50 +859,58 @@ class App(ctk.CTk):
             if not df_harcanan.empty:
                 df_harcanan['toplam_maliyet'] = df_harcanan['fiyat'] + df_harcanan['vade_farki']
                 df_harcanan['kumulatif'] = df_harcanan['toplam_maliyet'].cumsum()
-            
+
             plt.style.use('dark_background')
             fig = Figure(figsize=(10, 5), facecolor="#2b2b2b")
             fig.subplots_adjust(wspace=0.3)
-            
+
             ax1 = fig.add_subplot(121)
             ax2 = fig.add_subplot(122)
             ax2.set_facecolor("#1e1e1e")
-            
+
+            # Bug 10 fix: boş pie chart mesajı
             if ozet.sum() > 0:
-                ax1.pie(ozet, labels=ozet.index, autopct='%1.1f%%', startangle=140, textprops={'color':"w"})
+                ax1.pie(ozet, labels=ozet.index, autopct='%1.1f%%', startangle=140, textprops={'color': "w"})
                 ax1.set_title('Kategori Bazlı Toplam Harcama (Faiz Dahil)', color="white")
                 ax1.axis('equal')
-                
+            else:
+                ax1.text(0.5, 0.5, "Henüz harcama verisi yok", ha='center', va='center', color='gray', fontsize=12, transform=ax1.transAxes)
+                ax1.set_title('Kategori Bazlı Toplam Harcama', color="white")
+
             if not df_harcanan.empty:
                 ax2.plot(range(1, len(df_harcanan)+1), df_harcanan['kumulatif'], marker='o', color='#B39DDB', linewidth=2)
                 ax2.set_title("Alınan Ürünler - Birikimli Finansman", color="white")
                 ax2.set_xlabel("Alınan Parça Sırası", color="white")
                 ax2.set_ylabel("Toplam Maliyet / Borç (TL)", color="white")
                 ax2.grid(True, alpha=0.3)
-                
+            else:
+                ax2.text(0.5, 0.5, "Henüz alınan ürün yok", ha='center', va='center', color='gray', fontsize=12, transform=ax2.transAxes)
+                ax2.set_title("Alınan Ürünler - Birikimli Finansman", color="white")
+
             canvas = FigureCanvasTkAgg(fig, master=gfx_frame)
             canvas.draw()
             canvas.get_tk_widget().pack(fill="both", expand=True)
-            
+
         except Exception as e:
             ctk.CTkLabel(gfx_frame, text=f"Grafikler yüklenirken hata oluştu: {str(e)}").pack()
 
+    # ─── YAPAY ZEKA ───────────────────────────────────────────────────
+
     def show_ai_frame(self):
         self.clear_main_frame()
-        
-        # Grid Title with an extra button logic
+
         lbl_baslik = ctk.CTkLabel(self.main_frame, text="YAPAY ZEKA FİNANS DANIŞMANI", font=ctk.CTkFont(size=24, weight="bold"), text_color="#B39DDB")
-        lbl_baslik.grid(row=0, column=0, pady=10,padx=20, sticky="w")
-        
+        lbl_baslik.grid(row=0, column=0, pady=10, padx=20, sticky="w")
+
         btn_api_ayar = ctk.CTkButton(self.main_frame, text="⚙️ Ayarlar Panelini Aç", width=150, fg_color="#455A64", hover_color="#263238", command=self.show_ayarlar_frame)
         btn_api_ayar.grid(row=0, column=0, sticky="e", padx=20)
 
         self.ai_textbox = ctk.CTkTextbox(self.main_frame, width=650, height=350, font=ctk.CTkFont(size=14), fg_color="#181818")
         self.ai_textbox.grid(row=1, column=0, padx=20, pady=10, sticky="nsew")
-        
+
         btn_sor = ctk.CTkButton(self.main_frame, text="Verileri Google Gemini'ye Gönder / Yorumlat", command=self.get_ai_response, height=45, font=ctk.CTkFont(weight="bold", size=14), fg_color="#6A1B9A", hover_color="#4A148C", cursor="hand2")
         btn_sor.grid(row=2, column=0, pady=20)
-        
+
         bilgi_str = (
             "🤖 Bütçenizi yapay zeka aracılığıyla kontrol edin.\n\n"
             "Bu modül, uygulamaya girdiğiniz finansal analiz verilerinizi Google Gemini AI'a gönderir\n"
@@ -789,80 +923,279 @@ class App(ctk.CTk):
         self.ai_textbox.insert("0.0", bilgi_str)
         self.ai_textbox.configure(state="disabled")
 
+    def get_ai_response(self):
+        self.ai_textbox.configure(state="normal")
+        self.ai_textbox.delete("0.0", "end")
+        self.ai_textbox.insert("0.0", "\n⏳ Lütfen bekleyin veri sunucuya ve yapay zeka motoruna iletiliyor...\n(İnternet bağlantınıza göre birkaç saniye sürebilir)")
+        self.ai_textbox.configure(state="disabled")
+        self.update()
+
+        if genai is None:
+            self._ai_yazdir("\n[!] 'google-generativeai' kütüphanesi yüklenemedi.\nLütfen terminalden kurulumlarınızı tamamlayın.")
+            return
+
+        api_key = os.getenv("GEMINI_API_KEY")
+
+        if not api_key or "BURAYA" in api_key or " " in api_key:
+            self._ai_yazdir("\n[!] Kimlik Doğrulama Başarısız!\n\nLütfen 'Sistem Ayarları' menüsünü kullanarak\ngeçerli bir Google Gemini API key sisteme tanımlayın.")
+            return
+
+        try:
+            genai.configure(api_key=api_key)
+            model = genai.GenerativeModel('gemini-1.5-flash')
+
+            # Bug 2 fix: database modülü üzerinden bağlantı
+            con = database.get_connection()
+            df = pd.read_sql("SELECT kategori, urun_adi, fiyat, durum FROM urunler", con)
+            con.close()
+
+            if df.empty:
+                self._ai_yazdir("\n[!] Henüz hiç kayıt bulunmuyor.")
+                return
+
+            ozet = df.groupby('kategori')['fiyat'].sum()
+            durumlar = df['durum'].str.upper().str.strip()
+            harcanan = df[durumlar.isin(['E', 'EVET', 'ALINDI'])]['fiyat'].sum()
+            bekleyen = df[~durumlar.isin(['E', 'EVET', 'ALINDI'])]['fiyat'].sum()
+
+            masked_str = ""
+            for idx, row in df.iterrows():
+                masked_str += f"- Ürün {idx+1} (Kategori: {row['kategori']}): {row['fiyat']} TL\n"
+
+            prompt = f"Ben çeşitli harcamalarımı ve ihtiyaçlarımı planlayabildiğim, genel bir bütçe ve ürün takip sistemi kullanıyorum.\nGüncel bütçe tablom:\nŞimdiye kadar tam yansıyan harcama tutarı: {harcanan} TL\nPlanlanan tahmini ek maliyetler: {bekleyen} TL\n\nGizlilik Gereği Maskelenmiş Ürün Listesi:\n{masked_str}\n"
+            prompt += "\nLütfen profesyonel bir finans danışmanı olarak bu rakamları detaylı olarak analiz et. Projede nereye çok param gitmiş açıkla. 3-4 cümleyle bana sıcakkanlı ve motive edici bir destek yorumu yap."
+
+            response = model.generate_content(prompt)
+            self._ai_yazdir("\n🤖 GEMINI YAKLAŞIMI:\n\n" + response.text.strip())
+
+        except Exception as e:
+            self._ai_yazdir(f"\n[!] Servis Kesintisi veya Anahtar Hatası: {e}\n\n(Lütfen API anahtarınızı kontrol edin, muhtemelen karakter hatası mevcut.)")
+
+    def _ai_yazdir(self, metin):
+        self.ai_textbox.configure(state="normal")
+        self.ai_textbox.delete("0.0", "end")
+        self.ai_textbox.insert("0.0", metin)
+        self.ai_textbox.configure(state="disabled")
+
+    # ─── SİSTEM AYARLARI ──────────────────────────────────────────────
+
     def show_ayarlar_frame(self):
         self.clear_main_frame()
         self.main_frame.grid_rowconfigure(1, weight=1)
         self.main_frame.grid_columnconfigure(0, weight=1)
-        
+
         lbl_baslik = ctk.CTkLabel(self.main_frame, text="SİSTEM AYARLARI VE GÜVENLİK", font=ctk.CTkFont(size=24, weight="bold"), text_color="#90CAF9")
         lbl_baslik.grid(row=0, column=0, pady=20)
-        
-        kutu = ctk.CTkFrame(self.main_frame, fg_color="#1E1E1E")
-        kutu.grid(row=1, column=0, padx=20, pady=10, sticky="nsew")
-        
-        ctk.CTkLabel(kutu, text="Görsel Tema Seçimi:", font=ctk.CTkFont(weight="bold")).grid(row=0, column=0, padx=20, pady=15, sticky="e")
+
+        scroll = ctk.CTkScrollableFrame(self.main_frame, fg_color="#1E1E1E")
+        scroll.grid(row=1, column=0, padx=20, pady=10, sticky="nsew")
+        kutu = scroll
+
+        row_idx = 0
+
+        # ── TEMA ──
+        ctk.CTkLabel(kutu, text="Görsel Tema Seçimi:", font=ctk.CTkFont(weight="bold")).grid(row=row_idx, column=0, padx=20, pady=15, sticky="e")
         def change_theme(secim):
             if secim == "Karanlık Mod (Dark)": ctk.set_appearance_mode("Dark")
             else: ctk.set_appearance_mode("Light")
+            settings = profile_manager.load_profile_settings(self.current_profile)
+            settings["theme"] = "Dark" if "Dark" in secim else "Light"
+            profile_manager.save_profile_settings(self.current_profile, settings)
         tema_menu = ctk.CTkOptionMenu(kutu, values=["Karanlık Mod (Dark)", "Aydınlık Mod (Light)"], command=change_theme)
         tema_menu.set("Karanlık Mod (Dark)" if ctk.get_appearance_mode() == "Dark" else "Aydınlık Mod (Light)")
-        tema_menu.grid(row=0, column=1, padx=20, pady=15, sticky="w")
-        
-        ctk.CTkLabel(kutu, text="Yeni Uygulama Şifresi (PIN):", font=ctk.CTkFont(weight="bold")).grid(row=1, column=0, padx=20, pady=15, sticky="e")
+        tema_menu.grid(row=row_idx, column=1, padx=20, pady=15, sticky="w")
+        row_idx += 1
+
+        # ── PIN DEĞİŞTİR ──
+        ctk.CTkLabel(kutu, text="Yeni Uygulama Şifresi (PIN):", font=ctk.CTkFont(weight="bold")).grid(row=row_idx, column=0, padx=20, pady=15, sticky="e")
         e_yeni_pin = ctk.CTkEntry(kutu, width=150, show="*")
-        e_yeni_pin.grid(row=1, column=1, padx=20, pady=15, sticky="w")
+        e_yeni_pin.grid(row=row_idx, column=1, padx=20, pady=15, sticky="w")
         def degistir_pin():
             yeni = e_yeni_pin.get().strip()
             if len(yeni) < 4:
                 messagebox.showwarning("Geçersiz", "Şifre en az 4 haneli olmalıdır.")
                 return
             yeni_hash = hashlib.sha256(yeni.encode("utf-8")).hexdigest()
-            os.environ["APP_PIN"] = yeni_hash
-            set_key(".env", "APP_PIN", yeni_hash)
-            messagebox.showinfo("Başarılı", "Uygulama PIN kodunuz başarıyla değiştirildi! (Kriptografik olarak şifrelendi)")
+            settings = profile_manager.load_profile_settings(self.current_profile)
+            settings["pin_hash"] = yeni_hash
+            profile_manager.save_profile_settings(self.current_profile, settings)
+            messagebox.showinfo("Başarılı", "Uygulama PIN kodunuz başarıyla değiştirildi!")
             e_yeni_pin.delete(0, 'end')
-        ctk.CTkButton(kutu, text="PIN Değiştir", fg_color="#D84315", hover_color="#BF360C", width=120, command=degistir_pin).grid(row=1, column=2, padx=10, pady=15, sticky="w")
+        ctk.CTkButton(kutu, text="PIN Değiştir", fg_color="#D84315", hover_color="#BF360C", width=120, command=degistir_pin).grid(row=row_idx, column=2, padx=10, pady=15, sticky="w")
+        row_idx += 1
 
-        ctk.CTkLabel(kutu, text="Veritabanı (.db) Yedeği:", font=ctk.CTkFont(weight="bold")).grid(row=2, column=0, padx=20, pady=15, sticky="e")
-        def yedekle():
+        # ── YEDEKLEME ──
+        ctk.CTkLabel(kutu, text="Veritabanı Yedeği:", font=ctk.CTkFont(weight="bold")).grid(row=row_idx, column=0, padx=20, pady=15, sticky="e")
+        def yedekle_simdi():
+            if self.backup_manager:
+                path = self.backup_manager.create_backup()
+                if path:
+                    messagebox.showinfo("Başarılı", f"Yedek alındı:\n{path}")
+                else:
+                    messagebox.showerror("Hata", "Yedekleme başarısız.")
+        def yedekle_indir():
             kayit_yeri = filedialog.asksaveasfilename(defaultextension=".bak", initialfile="urun_takip_yedek.bak", title="Yedeği Nereye Kaydedelim?")
             if kayit_yeri:
                 try:
-                    db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "urunler.db")
-                    shutil.copy2(db_path, kayit_yeri)
-                    messagebox.showinfo("Başarılı", f"Veritabanı güvenle kopyalandı:\n{kayit_yeri}")
+                    shutil.copy2(database.DB_PATH, kayit_yeri)
+                    messagebox.showinfo("Başarılı", f"Veritabanı kopyalandı:\n{kayit_yeri}")
                 except Exception as e:
                     messagebox.showerror("Hata", f"Yedekleme başarısız:\n{str(e)}")
-        ctk.CTkButton(kutu, text="💾 Yedeği İndir", fg_color="#00695C", hover_color="#004D40", width=120, command=yedekle).grid(row=2, column=1, padx=20, pady=15, sticky="w")
 
-        ctk.CTkLabel(kutu, text="Google Gemini AI API Key:", font=ctk.CTkFont(weight="bold")).grid(row=3, column=0, padx=20, pady=15, sticky="e")
+        yedek_frame = ctk.CTkFrame(kutu, fg_color="transparent")
+        yedek_frame.grid(row=row_idx, column=1, columnspan=2, padx=10, pady=15, sticky="w")
+        ctk.CTkButton(yedek_frame, text="💾 Yedeği İndir", fg_color="#00695C", hover_color="#004D40", width=120, command=yedekle_indir).pack(side="left", padx=5)
+        ctk.CTkButton(yedek_frame, text="Şimdi Yedekle", fg_color="#1565C0", hover_color="#0D47A1", width=120, command=yedekle_simdi).pack(side="left", padx=5)
+        row_idx += 1
+
+        # Otomatik yedekleme ayarları
+        settings = profile_manager.load_profile_settings(self.current_profile)
+        backup_cfg = settings.get("backup", {})
+
+        ctk.CTkLabel(kutu, text="Otomatik Yedekleme:", font=ctk.CTkFont(weight="bold")).grid(row=row_idx, column=0, padx=20, pady=10, sticky="e")
+
+        auto_var = ctk.BooleanVar(value=backup_cfg.get("enabled", False))
+        def toggle_auto_backup():
+            s = profile_manager.load_profile_settings(self.current_profile)
+            s["backup"]["enabled"] = auto_var.get()
+            profile_manager.save_profile_settings(self.current_profile, s)
+            if auto_var.get() and self.backup_manager:
+                self.backup_manager.settings = s["backup"]
+                self.backup_manager.start_scheduled()
+            elif self.backup_manager:
+                self.backup_manager.stop_scheduled()
+
+        auto_frame = ctk.CTkFrame(kutu, fg_color="transparent")
+        auto_frame.grid(row=row_idx, column=1, columnspan=2, padx=10, pady=10, sticky="w")
+        ctk.CTkSwitch(auto_frame, text="Etkin", variable=auto_var, command=toggle_auto_backup).pack(side="left", padx=5)
+
+        interval_var = ctk.StringVar(value={"daily": "Günlük", "weekly": "Haftalık", "monthly": "Aylık"}.get(backup_cfg.get("interval", "weekly"), "Haftalık"))
+        def set_interval(val):
+            mapping = {"Günlük": "daily", "Haftalık": "weekly", "Aylık": "monthly"}
+            s = profile_manager.load_profile_settings(self.current_profile)
+            s["backup"]["interval"] = mapping.get(val, "weekly")
+            profile_manager.save_profile_settings(self.current_profile, s)
+        ctk.CTkOptionMenu(auto_frame, values=["Günlük", "Haftalık", "Aylık"], variable=interval_var, command=set_interval, width=100).pack(side="left", padx=5)
+
+        last_backup = self.backup_manager.get_last_backup_time() if self.backup_manager else "?"
+        ctk.CTkLabel(auto_frame, text=f"Son: {last_backup}", text_color="gray", font=ctk.CTkFont(size=11)).pack(side="left", padx=10)
+        row_idx += 1
+
+        # ── PROGRAMI KALDIR ──
+        try:
+            import installer
+            installer.show_uninstall_button_in_app(kutu, self)
+        except Exception:
+            pass
+
+        # ── BİLDİRİM AYARLARI ──
+        ctk.CTkLabel(kutu, text="─── Bildirim Ayarları ───", font=ctk.CTkFont(size=14, weight="bold"), text_color="#FFB74D").grid(row=row_idx, column=0, columnspan=3, pady=(20, 10))
+        row_idx += 1
+
+        notif = settings.get("notifications", {})
+
+        ctk.CTkLabel(kutu, text="Aylık Bütçe Limiti (TL):", font=ctk.CTkFont(weight="bold")).grid(row=row_idx, column=0, padx=20, pady=10, sticky="e")
+        e_budget = ctk.CTkEntry(kutu, width=150)
+        e_budget.insert(0, str(settings.get("monthly_budget", 0)))
+        e_budget.grid(row=row_idx, column=1, padx=20, pady=10, sticky="w")
+        def save_budget():
+            try:
+                val = float(e_budget.get().strip().replace(',', '.'))
+                s = profile_manager.load_profile_settings(self.current_profile)
+                s["monthly_budget"] = val
+                profile_manager.save_profile_settings(self.current_profile, s)
+                messagebox.showinfo("Başarılı", f"Aylık bütçe limiti: {val:.0f} TL")
+            except ValueError:
+                messagebox.showerror("Hata", "Geçerli bir sayı girin.")
+        ctk.CTkButton(kutu, text="Kaydet", fg_color="#1B5E20", width=80, command=save_budget).grid(row=row_idx, column=2, padx=10, pady=10, sticky="w")
+        row_idx += 1
+
+        notif_items = [
+            ("Taksit Hatırlatıcısı:", "taksit_reminder"),
+            ("Bütçe Uyarısı (%80):", "budget_warning"),
+            ("Aylık Özet Bildirimi:", "monthly_summary"),
+        ]
+        for label_text, key in notif_items:
+            ctk.CTkLabel(kutu, text=label_text, font=ctk.CTkFont(weight="bold")).grid(row=row_idx, column=0, padx=20, pady=8, sticky="e")
+            var = ctk.BooleanVar(value=notif.get(key, True))
+            def make_toggle(k, v):
+                def toggle():
+                    s = profile_manager.load_profile_settings(self.current_profile)
+                    s["notifications"][k] = v.get()
+                    profile_manager.save_profile_settings(self.current_profile, s)
+                return toggle
+            ctk.CTkSwitch(kutu, text="", variable=var, command=make_toggle(key, var)).grid(row=row_idx, column=1, padx=20, pady=8, sticky="w")
+            row_idx += 1
+
+        # ── PROFİL YÖNETİMİ ──
+        ctk.CTkLabel(kutu, text="─── Profil Yönetimi ───", font=ctk.CTkFont(size=14, weight="bold"), text_color="#81D4FA").grid(row=row_idx, column=0, columnspan=3, pady=(20, 10))
+        row_idx += 1
+
+        ctk.CTkLabel(kutu, text=f"Aktif Profil: {self.current_profile}", font=ctk.CTkFont(weight="bold")).grid(row=row_idx, column=0, padx=20, pady=10, sticky="e")
+        prof_btn_frame = ctk.CTkFrame(kutu, fg_color="transparent")
+        prof_btn_frame.grid(row=row_idx, column=1, columnspan=2, padx=10, pady=10, sticky="w")
+
+        def profil_degistir():
+            if self.backup_manager: self.backup_manager.stop_scheduled()
+            if self.notification_manager: self.notification_manager.stop_periodic_checks()
+            if self.price_tracker: self.price_tracker.stop_periodic_checks()
+            self.withdraw()
+            self.show_login_screen()
+
+        def profil_sil():
+            try:
+                profiles = profile_manager.list_profiles()
+                if len(profiles) <= 1:
+                    messagebox.showwarning("Uyarı", "Son kalan profil silinemez.")
+                    return
+                onay = messagebox.askyesno("Onay", f"'{self.current_profile}' profilini silmek istediğinize emin misiniz?\nTüm veriler silinecek!")
+                if onay:
+                    profile_manager.delete_profile(self.current_profile)
+                    profil_degistir()
+            except ValueError as ve:
+                messagebox.showerror("Hata", str(ve))
+
+        ctk.CTkButton(prof_btn_frame, text="Profil Değiştir", fg_color="#455A64", width=120, command=profil_degistir).pack(side="left", padx=5)
+        ctk.CTkButton(prof_btn_frame, text="Profili Sil", fg_color="#B71C1C", hover_color="#7F0000", width=100, command=profil_sil).pack(side="left", padx=5)
+        row_idx += 1
+
+        # ── API KEY ──
+        ctk.CTkLabel(kutu, text="─── Yapay Zeka Ayarları ───", font=ctk.CTkFont(size=14, weight="bold"), text_color="#B39DDB").grid(row=row_idx, column=0, columnspan=3, pady=(20, 10))
+        row_idx += 1
+
+        ctk.CTkLabel(kutu, text="Google Gemini AI API Key:", font=ctk.CTkFont(weight="bold")).grid(row=row_idx, column=0, padx=20, pady=15, sticky="e")
         e_api_key = ctk.CTkEntry(kutu, width=250, show="*")
         mevcut_key = os.getenv("GEMINI_API_KEY", "")
         e_api_key.insert(0, mevcut_key)
-        e_api_key.grid(row=3, column=1, padx=20, pady=15, sticky="w")
+        e_api_key.grid(row=row_idx, column=1, padx=20, pady=15, sticky="w")
         def set_api():
             nk = e_api_key.get().strip()
             os.environ["GEMINI_API_KEY"] = nk
-            set_key(".env", "GEMINI_API_KEY", nk)
+            env_file = os.path.join(profile_manager.get_base_dir(), ".env")
+            if not os.path.exists(env_file):
+                open(env_file, 'a').close()
+            set_key(env_file, "GEMINI_API_KEY", nk)
             messagebox.showinfo("Başarılı", "API Anahtarı başarıyla güncellendi!")
         def clear_api():
             e_api_key.delete(0, 'end')
             os.environ["GEMINI_API_KEY"] = ""
-            set_key(".env", "GEMINI_API_KEY", "")
+            env_file = os.path.join(profile_manager.get_base_dir(), ".env")
+            if os.path.exists(env_file):
+                set_key(env_file, "GEMINI_API_KEY", "")
             messagebox.showinfo("Silindi", "API Anahtarı sistemden temizlendi.")
-            
+
         def api_yardim():
             yh = ctk.CTkToplevel(self)
             yh.title("Gemini API Nasıl Alınır?")
             yh.geometry("600x550")
             yh.transient(self)
             yh.grab_set()
-            
+
             ctk.CTkLabel(yh, text="Nasıl Ücretsiz Google Gemini API Anahtarı Alınır?", font=ctk.CTkFont(size=18, weight="bold"), text_color="#B39DDB").pack(pady=15)
-            
+
             txt = ctk.CTkTextbox(yh, width=550, height=450, font=ctk.CTkFont(size=14))
             txt.pack(padx=20, pady=10)
-            
+
             metin = (
                 "Adım 1: Google Hesabınızla Giriş Yapın\n"
                 "  • Tarayıcınızdan 'Google AI Studio' (https://aistudio.google.com/) adresine gidin.\n\n"
@@ -884,100 +1217,47 @@ class App(ctk.CTk):
             txt.configure(state="disabled")
 
         api_btn_frame = ctk.CTkFrame(kutu, fg_color="transparent")
-        api_btn_frame.grid(row=3, column=2, padx=10, sticky="w")
+        api_btn_frame.grid(row=row_idx, column=2, padx=10, sticky="w")
         ctk.CTkButton(api_btn_frame, text="Kaydet", fg_color="#1B5E20", hover_color="#003300", width=60, command=set_api).pack(side="left", padx=5)
         ctk.CTkButton(api_btn_frame, text="Temizle", fg_color="#B71C1C", hover_color="#7F0000", width=60, command=clear_api).pack(side="left", padx=5)
         ctk.CTkButton(api_btn_frame, text="ℹ️ Nasıl Alınır?", fg_color="#0D47A1", hover_color="#01579B", width=100, command=api_yardim).pack(side="left", padx=5)
 
-    def get_ai_response(self):
-        self.ai_textbox.configure(state="normal")
-        self.ai_textbox.delete("0.0", "end")
-        self.ai_textbox.insert("0.0", "\n⏳ Lütfen bekleyin veri sunucuya ve yapay zeka motoruna iletiliyor...\n(İnternet bağlantınıza göre birkaç saniye sürebilir)")
-        self.ai_textbox.configure(state="disabled")
-        self.update() 
-
-        if genai is None:
-            self._ai_yazdir("\n[!] 'google-generativeai' kütüphanesi yüklenemedi.\nLütfen terminalden kurulumlarınızı tamamlayın.")
-            return
-
-        api_key = os.getenv("GEMINI_API_KEY")
-            
-        if not api_key or "BURAYA" in api_key or " " in api_key:
-            self._ai_yazdir("\n[!] Kimlik Doğrulama Başarısız!\n\nLütfen 'Sistem Ayarları' menüsünü kullanarak\ngeçerli bir Google Gemini API key sisteme tanımlayın.")
-            return
-            
-        try:
-            genai.configure(api_key=api_key)
-            model = genai.GenerativeModel('gemini-1.5-flash')
-            
-            con = sqlite3.connect(database.DB_PATH)
-            df = pd.read_sql("SELECT kategori, urun_adi, fiyat, durum FROM urunler", con)
-            con.close()
-            
-            if df.empty:
-                self._ai_yazdir("\n[!] Henüz hiç kayıt bulunmuyor.")
-                return
-                
-            ozet = df.groupby('kategori')['fiyat'].sum()
-            durumlar = df['durum'].str.upper().str.strip()
-            harcanan = df[durumlar.isin(['E', 'EVET', 'ALINDI'])]['fiyat'].sum()
-            bekleyen = df[~durumlar.isin(['E', 'EVET', 'ALINDI'])]['fiyat'].sum()
-            
-            masked_str = ""
-            for idx, row in df.iterrows():
-                masked_str += f"- Ürün {idx+1} (Kategori: {row['kategori']}): {row['fiyat']} TL\n"
-            
-            prompt = f"Ben çeşitli harcamalarımı ve ihtiyaçlarımı planlayabildiğim, genel bir bütçe ve ürün takip sistemi kullanıyorum.\nGüncel bütçe tablom:\nŞimdiye kadar tam yansıyan harcama tutarı: {harcanan} TL\nPlanlanan tahmini ek maliyetler: {bekleyen} TL\n\nGizlilik Gereği Maskelenmiş Ürün Listesi:\n{masked_str}\n"
-            prompt += "\nLütfen profesyonel bir finans danışmanı olarak bu rakamları detaylı olarak analiz et. Projede nereye çok param gitmiş açıkla. 3-4 cümleyle bana sıcakkanlı ve motive edici bir destek yorumu yap."
-            
-            response = model.generate_content(prompt)
-            self._ai_yazdir("\n🤖 GEMINI YAKLAŞIMI:\n\n" + response.text.strip())
-            
-        except Exception as e:
-            self._ai_yazdir(f"\n[!] Servis Kesintisi veya Anahtar Hatası: {e}\n\n(Lütfen API anahtarınızı kontrol edin, muhtemelen karakter hatası mevcut.)")
-
-    def _ai_yazdir(self, metin):
-        self.ai_textbox.configure(state="normal")
-        self.ai_textbox.delete("0.0", "end")
-        self.ai_textbox.insert("0.0", metin)
-        self.ai_textbox.configure(state="disabled")
+    # ─── WEB'DEN BUL ──────────────────────────────────────────────────
 
     def show_web_frame(self):
         self.clear_main_frame()
-        self.main_frame.grid_rowconfigure(2, weight=1)
+        self.main_frame.grid_rowconfigure(3, weight=1)
         self.main_frame.grid_columnconfigure(0, weight=1)
 
         baslik_frame = ctk.CTkFrame(self.main_frame, fg_color="transparent")
         baslik_frame.grid(row=0, column=0, pady=10)
-        
+
         lbl_baslik = ctk.CTkLabel(baslik_frame, text="WEB'DEN ÜRÜN BUL", font=ctk.CTkFont(size=24, weight="bold"), text_color="#FBC02D")
         lbl_baslik.pack(side="left", padx=5)
-        
+
         lbl_info = ctk.CTkLabel(baslik_frame, text="ℹ️", font=ctk.CTkFont(size=18), text_color="#81D4FA", cursor="hand2")
         lbl_info.pack(side="left", padx=5)
-        
+
         self.lbl_tooltip = ctk.CTkLabel(
-            self.main_frame, 
-            text="Bu aracı motor, bilgisayarınızı kastırmadan arka planda güvenli şekilde\nTrendyol ve N11 üzerindeki ürünleri (gerçek zamanlı) tarar.", 
-            fg_color="#263238", 
-            text_color="white", 
-            corner_radius=6, 
-            padx=10, 
+            self.main_frame,
+            text="Bu aracı motor, bilgisayarınızı kastırmadan arka planda güvenli şekilde\nTrendyol ve N11 üzerindeki ürünleri (gerçek zamanlı) tarar.",
+            fg_color="#263238",
+            text_color="white",
+            corner_radius=6,
+            padx=10,
             pady=8
         )
-        
+
         def show_tooltip(e):
             self.lbl_tooltip.place(in_=lbl_info, relx=1.3, rely=-0.5)
-            
         def hide_tooltip(e):
             self.lbl_tooltip.place_forget()
-            
         lbl_info.bind("<Enter>", show_tooltip)
         lbl_info.bind("<Leave>", hide_tooltip)
-        
+
         ayar_frame = ctk.CTkFrame(self.main_frame, fg_color="transparent")
         ayar_frame.grid(row=1, column=0, pady=5)
-        
+
         self.radio_var = ctk.StringVar(value="hizli")
         radio_hizli = ctk.CTkRadioButton(ayar_frame, text="⚡ Hızlı Arama (Trendyol/N11)", variable=self.radio_var, value="hizli", text_color="#A5D6A7")
         radio_hizli.pack(side="left", padx=10)
@@ -986,14 +1266,14 @@ class App(ctk.CTk):
 
         arama_frame = ctk.CTkFrame(self.main_frame, fg_color="transparent")
         arama_frame.grid(row=2, column=0, pady=5)
-        
+
         lbl_arama = ctk.CTkLabel(arama_frame, text="Aranacak Ürün:")
         lbl_arama.pack(side="left", padx=5)
-        
+
         self.e_web_ara = ctk.CTkEntry(arama_frame, width=250)
         self.e_web_ara.pack(side="left", padx=5)
         self.e_web_ara.bind('<Return>', lambda e: self.web_arama_baslat())
-        
+
         btn_ara = ctk.CTkButton(arama_frame, text="Bul", width=80, fg_color="#F57C00", hover_color="#E65100", command=self.web_arama_baslat)
         btn_ara.pack(side="left", padx=5)
 
@@ -1003,7 +1283,7 @@ class App(ctk.CTk):
         self.tree_web.heading("Ürün Adı", text="Ürün Adı")
         self.tree_web.heading("Fiyat", text="Fiyat (TL)")
         self.tree_web.heading("Link", text="Link")
-        
+
         self.tree_web.column("Platform", width=80, anchor="center")
         self.tree_web.column("Ürün Adı", width=350, anchor="w")
         self.tree_web.column("Fiyat", width=90, anchor="e")
@@ -1012,13 +1292,16 @@ class App(ctk.CTk):
 
         btn_frame = ctk.CTkFrame(self.main_frame, fg_color="transparent")
         btn_frame.grid(row=4, column=0, pady=10)
-        
+
         btn_ekle = ctk.CTkButton(btn_frame, text="Veritabanıma Ekle", fg_color="#1B5E20", hover_color="#003300", command=self.web_db_ekle)
         btn_ekle.pack(side="left", padx=10)
-        
+
         btn_link = ctk.CTkButton(btn_frame, text="📍 Tarayıcıda Aç", fg_color="#1976D2", hover_color="#1565C0", command=self.web_linke_git)
         btn_link.pack(side="left", padx=10)
-        
+
+        btn_takip = ctk.CTkButton(btn_frame, text="🔔 Fiyat Takip Et", fg_color="#E65100", hover_color="#BF360C", command=self.web_fiyat_takip_ekle)
+        btn_takip.pack(side="left", padx=10)
+
         self.lbl_web_durum = ctk.CTkLabel(self.main_frame, text="", text_color="yellow")
         self.lbl_web_durum.grid(row=5, column=0, pady=5)
 
@@ -1027,12 +1310,12 @@ class App(ctk.CTk):
         if len(kelime) < 3:
             self.lbl_web_durum.configure(text="Lütfen aramak için kelime girin.")
             return
-            
+
         self.lbl_web_durum.configure(text="⏳ Aranıyor... (Lütfen bekleyin)")
         self.update()
         for item in self.tree_web.get_children():
             self.tree_web.delete(item)
-            
+
         def fetch():
             import web_scraper
             try:
@@ -1058,6 +1341,16 @@ class App(ctk.CTk):
                     messagebox.showerror("Arama Hatası", hmesaj)
                     self.lbl_web_durum.configure(text="❌ Arama motoru hatası. Lütfen uyarılara bakın.", text_color="#FF5252")
                 self.after(0, hata_bas)
+            # Bug 4 fix: finally ile status reset
+            finally:
+                def reset_durum():
+                    try:
+                        current = self.lbl_web_durum.cget("text")
+                        if "Aranıyor" in current:
+                            self.lbl_web_durum.configure(text="Arama tamamlandı.", text_color="yellow")
+                    except Exception:
+                        pass
+                self.after(0, reset_durum)
 
         threading.Thread(target=fetch, daemon=True).start()
 
@@ -1069,194 +1362,263 @@ class App(ctk.CTk):
         if link: webbrowser.open(link)
 
     def web_db_ekle(self):
+        """Bug 7 fix: Hızlı Kayıt popup'ına durum ve taksit desteği eklendi."""
         selected = self.tree_web.selection()
         if not selected:
             messagebox.showwarning("Uyarı", "Lütfen web tablosundan bir ürün seçin.")
             return
-            
+
         val = self.tree_web.item(selected[0])['values']
         ad = str(val[1])
         fyt = float(str(val[2]))
         link = str(val[3])
-        
+
         popup = ctk.CTkToplevel(self)
         popup.title("Hızlı Kayıt")
-        popup.geometry("350x250")
+        popup.geometry("380x420")
         popup.transient(self)
         popup.grab_set()
-        
+
         ctk.CTkLabel(popup, text=f"Seçilen Ürün:\n{ad[:40]}...", font=ctk.CTkFont(weight="bold")).pack(pady=10)
-        ctk.CTkLabel(popup, text="Hangi Kategoriye Eklensin?").pack(pady=5)
-        
+
+        ctk.CTkLabel(popup, text="Kategori:").pack(pady=3)
         rows = database.urunleri_getir()
         kategoriler = list(set([r[1] for r in rows]))
         if not kategoriler:
             kategoriler = ["Elektronik", "Giyim", "Market", "Diğer"]
-            
         c_kat = ctk.CTkComboBox(popup, values=kategoriler, width=200)
-        c_kat.pack(pady=10)
-        
+        c_kat.pack(pady=3)
+
+        ctk.CTkLabel(popup, text="Durum:").pack(pady=3)
+        c_drm = ctk.CTkOptionMenu(popup, values=["Hayır", "Evet"], width=200)
+        c_drm.pack(pady=3)
+
+        odeme_var = ctk.StringVar(value="nakit")
+        odeme_frame = ctk.CTkFrame(popup, fg_color="transparent")
+        odeme_frame.pack(pady=5)
+        taksit_frame = ctk.CTkFrame(popup, fg_color="transparent")
+
+        def toggle():
+            if odeme_var.get() == "taksitli":
+                taksit_frame.pack(pady=3)
+            else:
+                taksit_frame.pack_forget()
+
+        ctk.CTkRadioButton(odeme_frame, text="Nakit", variable=odeme_var, value="nakit", command=toggle).pack(side="left", padx=5)
+        ctk.CTkRadioButton(odeme_frame, text="Taksitli", variable=odeme_var, value="taksitli", command=toggle).pack(side="left", padx=5)
+
+        e_ts = ctk.CTkEntry(taksit_frame, width=80, placeholder_text="Taksit")
+        e_ts.pack(side="left", padx=5)
+        e_vf = ctk.CTkEntry(taksit_frame, width=80, placeholder_text="Vade TL")
+        e_vf.pack(side="left", padx=5)
+
         def kaydet():
             k = c_kat.get().strip()
             if not k:
                 k = "Diğer"
-            database.urun_ekle(k, ad, fyt, "Hayır", link)
+            d = c_drm.get()
+            ts = 0
+            vf = 0.0
+            if odeme_var.get() == "taksitli":
+                try:
+                    ts = int(e_ts.get().strip()) if e_ts.get().strip() else 2
+                    vf = float(e_vf.get().strip().replace(',', '.')) if e_vf.get().strip() else 0.0
+                except ValueError:
+                    pass
+            database.urun_ekle(k, ad, fyt, d, link, taksit_sayisi=ts, vade_farki=vf)
             popup.destroy()
             messagebox.showinfo("Başarılı", f"{ad[:30]}...\n\nSisteminize başarıyla kaydedildi!")
-            
-        ctk.CTkButton(popup, text="Sisteme Kaydet", fg_color="#1B5E20", command=kaydet).pack(pady=20)
 
-def baslat_kurulum_modu():
-    import shutil, subprocess
-    
-    kur_app = ctk.CTk()
-    kur_app.title("BütçeM - Kurulum Sihirbazı")
-    kur_app.geometry("550x450")
-    kur_app.eval('tk::PlaceWindow . center')
-    
-    ctk.CTkLabel(kur_app, text="BütçeM Kurulumu", font=ctk.CTkFont(size=22, weight="bold"), text_color="#2196F3").pack(pady=15)
-    ctk.CTkLabel(kur_app, text="Bu sihirbaz uygulamayı sisteminize entegre edip kuracaktır.\nLütfen kurulum dizinini ve seçeneklerinizi belirleyin:", text_color="gray").pack(pady=5)
-    
-    appdata_def = os.path.join(os.getenv("APPDATA") or os.path.expanduser("~"), "ButceM")
-    
-    frame_path = ctk.CTkFrame(kur_app, fg_color="transparent")
-    frame_path.pack(pady=10, fill="x", padx=40)
-    
-    ctk.CTkLabel(frame_path, text="Hedef Kurulum Klasörü:").pack(anchor="w")
-    
-    e_path = ctk.CTkEntry(frame_path, width=350)
-    e_path.pack(side="left", padx=(0, 10))
-    e_path.insert(0, appdata_def)
-    
-    def sec_dizin():
-        from tkinter import filedialog
-        d = filedialog.askdirectory(title="Kurulum Klasörünü Seçin", initialdir=os.path.dirname(appdata_def))
-        if d:
-            hedef = os.path.join(d, "ButceM") if not d.lower().endswith("butcem") else d
-            e_path.delete(0, 'end')
-            e_path.insert(0, hedef)
-            
-    ctk.CTkButton(frame_path, text="Gözat...", width=80, command=sec_dizin).pack(side="left")
-    
-    opts_frame = ctk.CTkFrame(kur_app, fg_color="transparent")
-    opts_frame.pack(pady=10, anchor="w", padx=40)
-    
-    var_desktop = ctk.BooleanVar(value=True)
-    var_startmenu = ctk.BooleanVar(value=True)
-    
-    ctk.CTkCheckBox(opts_frame, text="Masaüstüne Kısayol Ekle", variable=var_desktop).pack(pady=5, anchor="w")
-    ctk.CTkCheckBox(opts_frame, text="Windows Başlat/Arama Menüsüne Ekle", variable=var_startmenu).pack(pady=5, anchor="w")
-    
-    def kur_ve_bitir():
-        btn_kur.configure(state="disabled", text="Sisteme Kuruluyor...")
-        kur_app.update()
-        
-        try:
-            install_dir = os.path.normpath(e_path.get().strip())
-            os.makedirs(install_dir, exist_ok=True)
-            
-            target_path = os.path.join(install_dir, "ButceM.exe")
-            current_exe = sys.executable
-            
-            # Kılavuz Dosyasını Üret ve Kaydet
-            kilavuz = """-----------------------------------------------------------
-          BütçeM - A'DAN Z'YE KULLANIM KILAVUZU
------------------------------------------------------------
+        ctk.CTkButton(popup, text="Sisteme Kaydet", fg_color="#1B5E20", command=kaydet).pack(pady=15)
 
-Hoş Geldiniz! Bu uygulama finansal alımlarınızı, bütçenizi ve e-ticaret 
-araştırmalarınızı tek bir ekranda birleştiren kapsamlı bir araçtır.
+    def web_fiyat_takip_ekle(self):
+        """Web sonuçlarından fiyat takibi ekle."""
+        selected = self.tree_web.selection()
+        if not selected:
+            messagebox.showwarning("Uyarı", "Lütfen takip etmek istediğiniz ürünü seçin.")
+            return
 
-1. İLK GİRİŞ VE AYARLAR
-- Programa her girişinizde güvenlik şifresi (PIN) istenir. 
-- İlk kurulumda şifreniz: 1234
-- Dilediğiniz zaman sol menüdeki "Sistem Ayarları" kısmından bu şifreyi değiştirebilirsiniz.
-- Sistem Ayarlarında ayrıca Karanlık/Aydınlık mod seçebilir ve Veritabanı Yedeğinizi alabilirsiniz.
+        val = self.tree_web.item(selected[0])['values']
+        ad = str(val[1])
+        fyt = float(str(val[2]))
+        link = str(val[3])
+        platform = str(val[0])
 
-2. ÜRÜN EKLEME (TAKSİT VE VADE FARKI)
-- Sol menüden "Parça Ekle" butonunu kullanın.
-- Ürün adı, Fiyat, Kategori ve İsteğe Bağlı olarak Ürün Linkini ekleyebilirsiniz.
-- Taksitli bir harcama ise taksit sayısını ve eklenecek vade farkını (faiz) belirtebilirsiniz.
+        popup = ctk.CTkToplevel(self)
+        popup.title("Fiyat Takibi Ekle")
+        popup.geometry("380x250")
+        popup.transient(self)
+        popup.grab_set()
 
-3. LİSTELEME, GÜNCELLEME VE EXCEL
-- "Liste & Düzenle" sekmesinde verilerinizi Kategori veya İsme göre süzebilirsiniz.
-- Bir ürünü düzenlemek için üzerine çift tıklamanız yeterlidir.
-- "Excel'e Aktar" butonu ile ekrandaki her şeyi bilgisayarınıza indirebilirsiniz.
-- "İçe Aktar" butonu ile kendi Excel dosyalarınızı topluca sisteme yükleyebilirsiniz.
+        ctk.CTkLabel(popup, text=f"Ürün: {ad[:40]}...", font=ctk.CTkFont(weight="bold")).pack(pady=10)
+        ctk.CTkLabel(popup, text=f"Mevcut Fiyat: {fyt:.2f} TL | Platform: {platform}").pack(pady=5)
 
-4. YAPAY ZEKA DESTEĞİ (GEMINI)
-- Sistem Ayarları menüsünde "Nasıl API Alınır?" rehberi mevcuttur. 
-- API kodunuzu girdikten sonra "Yapay Zeka" sekmesinde saniyeler içinde bütün 
-  harcamalarınızı analiz ettirebilir ve tasarruf / sağlık önerileri alabilirsiniz.
+        ctk.CTkLabel(popup, text="Hedef Fiyat (TL):").pack(pady=5)
+        e_hedef = ctk.CTkEntry(popup, width=150)
+        e_hedef.insert(0, f"{fyt * 0.9:.2f}")
+        e_hedef.pack(pady=5)
 
-5. WEB'DEN OTOMATİK ÜRÜN BULMA (BOT)
-- Trendyol, Amazon ve N11 üzerindeki ürün fiyatlarını tek tuşla, tarayıcıya girmeden 
-  "Web'den Bul" sekmesinde tarayabilirsiniz.
-- Hoşunuza giden bir sonucu "Hızlı Kayıt" seçeneğiyle doğrudan veritabanınıza kaydedebilirsiniz.
+        def ekle():
+            try:
+                hedef = float(e_hedef.get().strip().replace(',', '.'))
+                if self.price_tracker:
+                    self.price_tracker.add_tracking(link, ad, platform, hedef, fyt)
+                    popup.destroy()
+                    messagebox.showinfo("Başarılı", f"Fiyat takibi başlatıldı!\nHedef: {hedef:.2f} TL")
+            except ValueError:
+                messagebox.showerror("Hata", "Geçerli bir fiyat girin.", parent=popup)
 
-Geliştirici Sürümü: V2.1 - Tüm Hakları Saklıdır.
------------------------------------------------------------"""
-            kilavuz_yolu = os.path.join(install_dir, "Kullanim_Kilavuzu.txt")
-            with open(kilavuz_yolu, "w", encoding="utf-8") as kf:
-                kf.write(kilavuz)
-            
-            
-            # Marker dosya oluştur
-            marker_path = os.path.join(install_dir, ".butcem_installed")
-            if not os.path.exists(marker_path):
-                open(marker_path, 'w').close()
+        ctk.CTkButton(popup, text="Takibe Başla", fg_color="#E65100", command=ekle).pack(pady=15)
 
-            # Kendini asıl dizine kopyala
-            shutil.copy2(current_exe, target_path)
-            
-            vbs_lines = ['Set oWS = WScript.CreateObject("WScript.Shell")']
-            
-            if var_desktop.get():
-                desktop = os.path.join(os.environ.get("USERPROFILE", ""), "Desktop")
-                vbs_lines.append(f'Set oLink1 = oWS.CreateShortcut("{os.path.join(desktop, "BütçeM.lnk")}")')
-                vbs_lines.append(f'oLink1.TargetPath = "{target_path}"')
-                vbs_lines.append(f'oLink1.WorkingDirectory = "{install_dir}"')
-                vbs_lines.append('oLink1.Save')
-                
-            if var_startmenu.get():
-                appdata_system = os.getenv("APPDATA") or os.path.expanduser("~")
-                programs = os.path.join(appdata_system, "Microsoft", "Windows", "Start Menu", "Programs")
-                vbs_lines.append(f'Set oLink2 = oWS.CreateShortcut("{os.path.join(programs, "BütçeM.lnk")}")')
-                vbs_lines.append(f'oLink2.TargetPath = "{target_path}"')
-                vbs_lines.append(f'oLink2.WorkingDirectory = "{install_dir}"')
-                vbs_lines.append('oLink2.Save')
-                
-            vbs_path = os.path.join(install_dir, "create_shortcuts.vbs")
-            with open(vbs_path, "w", encoding="utf-16-le") as f:
-                f.write("\ufeff" + "\n".join(vbs_lines))
-                
-            subprocess.call(['cscript', '//nologo', vbs_path])
-            if os.path.exists(vbs_path): os.remove(vbs_path)
-            
-            messagebox.showinfo("Kurulum Tamamlandı", "Yazılım bilgisayarınıza kalıcı olarak kuruldu!\nKısayollardan uygulamanızı dilediğiniz zaman başlatabilirsiniz. \n\nNot: İndirdiğiniz bu Kurulum dosyasını artık silebilirsiniz.")
-            subprocess.Popen([target_path])
-            kur_app.destroy()
-            sys.exit(0)
-            
-        except Exception as e:
-            messagebox.showerror("Kurulum Hatası", f"Hata oluştu:\n{e}")
-            btn_kur.configure(state="normal", text="Tekrar Dene")
-            
-    btn_kur = ctk.CTkButton(kur_app, text="Yükle (Install)", font=ctk.CTkFont(weight="bold"), fg_color="#1B5E20", hover_color="#003300", width=200, height=40, command=kur_ve_bitir)
-    btn_kur.pack(pady=20)
-    
-    kur_app.mainloop()
+    # ─── FİYAT TAKİP FRAME ───────────────────────────────────────────
+
+    def show_fiyat_takip_frame(self):
+        self.clear_main_frame()
+        self.main_frame.grid_rowconfigure(2, weight=1)
+        self.main_frame.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(self.main_frame, text="FİYAT TAKİP ALARMI", font=ctk.CTkFont(size=24, weight="bold"), text_color="#FF9800").grid(row=0, column=0, pady=10)
+
+        # Yeni takip ekleme
+        ekle_frame = ctk.CTkFrame(self.main_frame, fg_color="transparent")
+        ekle_frame.grid(row=1, column=0, pady=10, padx=20, sticky="ew")
+
+        ctk.CTkLabel(ekle_frame, text="URL:").pack(side="left", padx=3)
+        e_url = ctk.CTkEntry(ekle_frame, width=200, placeholder_text="Ürün linki")
+        e_url.pack(side="left", padx=3)
+
+        ctk.CTkLabel(ekle_frame, text="Ad:").pack(side="left", padx=3)
+        e_ad = ctk.CTkEntry(ekle_frame, width=130, placeholder_text="Ürün adı")
+        e_ad.pack(side="left", padx=3)
+
+        ctk.CTkLabel(ekle_frame, text="Platform:").pack(side="left", padx=3)
+        c_plat = ctk.CTkOptionMenu(ekle_frame, values=["Trendyol", "N11", "Diğer"], width=90)
+        c_plat.pack(side="left", padx=3)
+
+        ctk.CTkLabel(ekle_frame, text="Hedef TL:").pack(side="left", padx=3)
+        e_hedef = ctk.CTkEntry(ekle_frame, width=70)
+        e_hedef.pack(side="left", padx=3)
+
+        def ekle():
+            url = e_url.get().strip()
+            ad = e_ad.get().strip()
+            platform = c_plat.get()
+            try:
+                hedef = float(e_hedef.get().strip().replace(',', '.'))
+            except ValueError:
+                messagebox.showerror("Hata", "Geçerli bir hedef fiyat girin.")
+                return
+            if not url or not ad:
+                messagebox.showwarning("Uyarı", "URL ve ürün adı gerekli.")
+                return
+            if self.price_tracker:
+                self.price_tracker.add_tracking(url, ad, platform, hedef)
+            load_takip_data()
+            e_url.delete(0, 'end')
+            e_ad.delete(0, 'end')
+            e_hedef.delete(0, 'end')
+
+        ctk.CTkButton(ekle_frame, text="Ekle", width=60, fg_color="#E65100", command=ekle).pack(side="left", padx=5)
+
+        # Tablo
+        style = ttk.Style()
+        tree_ft = ttk.Treeview(self.main_frame, columns=("ID", "Ürün", "Platform", "Hedef", "Mevcut", "Son Kontrol", "Durum"), show="headings", height=12)
+        tree_ft.heading("ID", text="ID")
+        tree_ft.heading("Ürün", text="Ürün Adı")
+        tree_ft.heading("Platform", text="Platform")
+        tree_ft.heading("Hedef", text="Hedef (TL)")
+        tree_ft.heading("Mevcut", text="Mevcut (TL)")
+        tree_ft.heading("Son Kontrol", text="Son Kontrol")
+        tree_ft.heading("Durum", text="Durum")
+
+        tree_ft.column("ID", width=30, anchor="center")
+        tree_ft.column("Ürün", width=200, anchor="w")
+        tree_ft.column("Platform", width=80, anchor="center")
+        tree_ft.column("Hedef", width=80, anchor="e")
+        tree_ft.column("Mevcut", width=80, anchor="e")
+        tree_ft.column("Son Kontrol", width=120, anchor="center")
+        tree_ft.column("Durum", width=80, anchor="center")
+        tree_ft.grid(row=2, column=0, padx=20, pady=10, sticky="nsew")
+
+        tree_ft.tag_configure("ucuz", background="#1B5E20")
+        tree_ft.tag_configure("pahali", background="#B71C1C")
+        tree_ft.tag_configure("bekliyor", background="#37474F")
+
+        def load_takip_data():
+            for item in tree_ft.get_children():
+                tree_ft.delete(item)
+            try:
+                items = database.takip_listele(sadece_aktif=False)
+                for row in items:
+                    tid, url, ad, plat, hedef, mevcut, son, aktif = row
+                    if not aktif:
+                        durum = "Durduruldu"
+                        tag = "bekliyor"
+                    elif mevcut > 0 and mevcut <= hedef:
+                        durum = "Hedefe Ulaştı!"
+                        tag = "ucuz"
+                    elif mevcut > 0:
+                        durum = "Takipte"
+                        tag = "pahali"
+                    else:
+                        durum = "Bekleniyor"
+                        tag = "bekliyor"
+                    tree_ft.insert("", "end", values=(tid, ad[:40], plat, f"{hedef:.2f}", f"{mevcut:.2f}" if mevcut > 0 else "-", son or "-", durum), tags=(tag,))
+            except Exception:
+                pass
+
+        # İşlem butonları
+        btn_frame = ctk.CTkFrame(self.main_frame, fg_color="transparent")
+        btn_frame.grid(row=3, column=0, pady=10)
+
+        def kontrol_et():
+            if self.price_tracker:
+                def run():
+                    self.price_tracker.check_all_tracked_items()
+                    self.after(0, load_takip_data)
+                threading.Thread(target=run, daemon=True).start()
+                messagebox.showinfo("Bilgi", "Fiyat kontrolü başlatıldı...")
+
+        def takip_sil():
+            sel = tree_ft.selection()
+            if not sel: return
+            tid = tree_ft.item(sel[0])['values'][0]
+            database.takip_sil(tid)
+            load_takip_data()
+
+        def takip_duraklat():
+            sel = tree_ft.selection()
+            if not sel: return
+            tid = tree_ft.item(sel[0])['values'][0]
+            database.takip_duraklat(tid, False)
+            load_takip_data()
+
+        def takip_devam():
+            sel = tree_ft.selection()
+            if not sel: return
+            tid = tree_ft.item(sel[0])['values'][0]
+            database.takip_duraklat(tid, True)
+            load_takip_data()
+
+        ctk.CTkButton(btn_frame, text="Şimdi Kontrol Et", fg_color="#1565C0", command=kontrol_et).pack(side="left", padx=5)
+        ctk.CTkButton(btn_frame, text="Durdur", fg_color="#F57C00", command=takip_duraklat).pack(side="left", padx=5)
+        ctk.CTkButton(btn_frame, text="Devam Ettir", fg_color="#2E7D32", command=takip_devam).pack(side="left", padx=5)
+        ctk.CTkButton(btn_frame, text="Sil", fg_color="#B71C1C", command=takip_sil).pack(side="left", padx=5)
+
+        load_takip_data()
+
 
 if __name__ == "__main__":
     import sys
-    if getattr(sys, 'frozen', False):
-        current_dir = os.path.dirname(os.path.abspath(sys.executable))
-        # Marker dosya veya klasör adı kontrolü
-        marker = os.path.join(current_dir, ".butcem_installed")
-        dir_name = os.path.basename(current_dir).lower()
+    import installer
 
-        if dir_name != "butcem" and not os.path.exists(marker):
-            baslat_kurulum_modu()
-            sys.exit(0)
+    if "--uninstall" in sys.argv:
+        installer.baslat_kaldir_modu()
+        sys.exit(0)
+
+    if getattr(sys, 'frozen', False) and installer.should_show_installer():
+        installer.baslat_kurulum_modu()
+        sys.exit(0)
 
     app = App()
     app.mainloop()
