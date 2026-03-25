@@ -1,6 +1,19 @@
 import requests
 from bs4 import BeautifulSoup
 import urllib.parse
+import time
+from concurrent.futures import ThreadPoolExecutor
+
+
+def _retry(func, kelime, max_retries=2, delay=1.0):
+    """Basit retry wrapper. Sonuç boşsa tekrar dener."""
+    for attempt in range(max_retries + 1):
+        sonuclar, hatalar = func(kelime)
+        if sonuclar or attempt == max_retries:
+            return sonuclar, hatalar
+        time.sleep(delay)
+    return sonuclar, hatalar
+
 
 def trendyol_arama(kelime):
     query = urllib.parse.quote(kelime)
@@ -33,6 +46,7 @@ def trendyol_arama(kelime):
     except Exception as e:
         hatalar.append(f"Trendyol: {str(e)[:60]}")
     return sonuclar, hatalar
+
 
 def n11_arama(kelime):
     query = urllib.parse.quote(kelime.replace(" ", "+"))
@@ -73,6 +87,7 @@ def n11_arama(kelime):
     except Exception as e:
         hatalar.append(f"N11: {str(e)[:60]}")
     return sonuclar, hatalar
+
 
 def amazon_arama_selenium(kelime):
     try:
@@ -129,6 +144,7 @@ def amazon_arama_selenium(kelime):
             driver.quit()
     return sonuclar
 
+
 def urun_ara(kelime, mode="hizli"):
     tum_sonuclar = []
     tum_hatalar = []
@@ -136,8 +152,12 @@ def urun_ara(kelime, mode="hizli"):
         amz_res = amazon_arama_selenium(kelime)
         tum_sonuclar.extend(amz_res)
     else:
-        t_res, t_hatalar = trendyol_arama(kelime)
-        n_res, n_hatalar = n11_arama(kelime)
+        # Paralel arama (Bug 5 fix)
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            future_t = executor.submit(_retry, trendyol_arama, kelime)
+            future_n = executor.submit(_retry, n11_arama, kelime)
+            t_res, t_hatalar = future_t.result()
+            n_res, n_hatalar = future_n.result()
         tum_sonuclar.extend(t_res)
         tum_sonuclar.extend(n_res)
         tum_hatalar.extend(t_hatalar)
@@ -145,3 +165,49 @@ def urun_ara(kelime, mode="hizli"):
 
     tum_sonuclar = sorted(tum_sonuclar, key=lambda x: x['fiyat'])
     return tum_sonuclar, tum_hatalar
+
+
+# ─── TEKİL ÜRÜN FİYAT ÇEKME (Fiyat Takip için) ──────────────────────
+
+def trendyol_fiyat_getir(url):
+    """Trendyol ürün URL'sinden güncel fiyatı çek."""
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+    try:
+        r = requests.get(url, headers=headers, timeout=10)
+        if r.status_code == 200:
+            soup = BeautifulSoup(r.text, "html.parser")
+            price_tag = soup.find("span", class_="prc-dsc")
+            if not price_tag:
+                price_tag = soup.find("span", class_="prc-slg")
+            if price_tag:
+                fiyat_metin = price_tag.text.replace("TL", "").replace(".", "").replace(",", ".").strip()
+                return float(fiyat_metin)
+    except Exception:
+        pass
+    return None
+
+
+def n11_fiyat_getir(url):
+    """N11 ürün URL'sinden güncel fiyatı çek."""
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+    try:
+        r = requests.get(url, headers=headers, timeout=10)
+        if r.status_code == 200:
+            soup = BeautifulSoup(r.content, "html.parser")
+            price_tag = soup.find("ins") or soup.find("span", class_="newPrice")
+            if price_tag:
+                fiyat_metin = price_tag.text.replace("TL", "").replace(".", "").replace(",", ".").strip()
+                return float(fiyat_metin)
+    except Exception:
+        pass
+    return None
+
+
+def fiyat_getir(url, platform):
+    """Platform'a göre tekil ürün fiyatını çek."""
+    platform_lower = platform.lower()
+    if "trendyol" in platform_lower:
+        return trendyol_fiyat_getir(url)
+    elif "n11" in platform_lower:
+        return n11_fiyat_getir(url)
+    return None
