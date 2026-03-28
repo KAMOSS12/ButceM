@@ -1,9 +1,9 @@
 import sqlite3
 import os
 import datetime
+from contextlib import contextmanager
 
 DB_PATH = None
-CSV_PATH = "data/gercek_veriler.csv"
 
 
 def set_db_path(path):
@@ -19,8 +19,21 @@ def get_connection():
     return sqlite3.connect(DB_PATH)
 
 
+@contextmanager
+def get_db():
+    """Context manager: bağlantıyı otomatik kapatır."""
+    conn = get_connection()
+    try:
+        yield conn
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def init_db():
-    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+    db_dir = os.path.dirname(DB_PATH)
+    if db_dir:
+        os.makedirs(db_dir, exist_ok=True)
     with get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute('''
@@ -50,6 +63,14 @@ def init_db():
         if 'ekleme_tarihi' not in columns:
             cursor.execute("ALTER TABLE urunler ADD COLUMN ekleme_tarihi TEXT DEFAULT ''")
 
+        # Kategoriler tablosu
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS kategoriler (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ad TEXT NOT NULL UNIQUE
+            )
+        ''')
+
         # Fiyat takip tablosu
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS fiyat_takip (
@@ -66,31 +87,6 @@ def init_db():
         conn.commit()
 
 
-def migrate_from_csv():
-    if not os.path.exists(CSV_PATH):
-        return
-    with get_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute("SELECT COUNT(*) FROM urunler")
-        count = cursor.fetchone()[0]
-        if count == 0:
-            import csv
-            with open(CSV_PATH, "r", encoding="utf-8") as f:
-                reader = csv.reader(f)
-                for parcalar in reader:
-                    if len(parcalar) == 4:
-                        kategori, urun_adi, fiyat_str, durum = parcalar
-                        try:
-                            fiyat = float(fiyat_str.replace(',', '.'))
-                        except ValueError:
-                            fiyat = 0.0
-                        cursor.execute('''
-                            INSERT INTO urunler (kategori, urun_adi, fiyat, durum, link)
-                            VALUES (?, ?, ?, ?, ?)
-                        ''', (kategori, urun_adi, fiyat, durum, ""))
-            conn.commit()
-
-
 def urun_ekle(kategori, urun_adi, fiyat, durum, link="", taksit_sayisi=1, vade_farki=0.0, odenen_taksit=0, ekleme_tarihi=""):
     if not ekleme_tarihi:
         ekleme_tarihi = datetime.date.today().isoformat()
@@ -103,6 +99,11 @@ def urun_ekle(kategori, urun_adi, fiyat, durum, link="", taksit_sayisi=1, vade_f
         conn.commit()
 
 
+def _escape_like(pattern):
+    """LIKE pattern özel karakterlerini escape et."""
+    return pattern.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
+
+
 def urunleri_getir(kategori_filtre=None, arama_filtre=None):
     with get_connection() as conn:
         cursor = conn.cursor()
@@ -112,8 +113,8 @@ def urunleri_getir(kategori_filtre=None, arama_filtre=None):
             query += " AND kategori = ?"
             params.append(kategori_filtre)
         if arama_filtre:
-            query += " AND urun_adi LIKE ?"
-            params.append(f"%{arama_filtre}%")
+            query += " AND urun_adi LIKE ? ESCAPE '\\'"
+            params.append(f"%{_escape_like(arama_filtre)}%")
         cursor.execute(query, params)
         return cursor.fetchall()
 
@@ -191,3 +192,58 @@ def takip_duraklat(takip_id, aktif):
         cursor = conn.cursor()
         cursor.execute("UPDATE fiyat_takip SET aktif=? WHERE id=?", (1 if aktif else 0, takip_id))
         conn.commit()
+
+
+# ─── KATEGORİ CRUD ──────────────────────────────────────────────────
+
+def kategori_ekle(ad):
+    """Yeni kategori ekle (zaten varsa yoksay)."""
+    ad = ad.strip()
+    if not ad:
+        return
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("INSERT OR IGNORE INTO kategoriler (ad) VALUES (?)", (ad,))
+        conn.commit()
+
+
+def kategorileri_getir():
+    """Tüm kategorileri getir (kategoriler tablosu + mevcut ürünlerden UNION)."""
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT ad FROM kategoriler
+            UNION
+            SELECT DISTINCT kategori FROM urunler
+            ORDER BY 1
+        """)
+        result = [row[0] for row in cursor.fetchall() if row[0]]
+        return result if result else ["Diğer"]
+
+
+def kategori_sil(ad):
+    """Kategoriyi sil."""
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM kategoriler WHERE ad=?", (ad,))
+        conn.commit()
+
+
+def kategori_guncelle(eski_ad, yeni_ad):
+    """Kategori adını güncelle. Hem kategoriler tablosunda hem ürünlerde."""
+    yeni_ad = yeni_ad.strip()
+    if not yeni_ad:
+        return
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("UPDATE kategoriler SET ad=? WHERE ad=?", (yeni_ad, eski_ad))
+        cursor.execute("UPDATE urunler SET kategori=? WHERE kategori=?", (yeni_ad, eski_ad))
+        conn.commit()
+
+
+def kategori_urun_sayisi(ad):
+    """Belirtilen kategorideki ürün sayısını döndür."""
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM urunler WHERE kategori=?", (ad,))
+        return cursor.fetchone()[0]

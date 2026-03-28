@@ -2,7 +2,15 @@ import requests
 from bs4 import BeautifulSoup
 import urllib.parse
 import time
+import threading
 from concurrent.futures import ThreadPoolExecutor
+from logger import get_logger
+
+_log = get_logger("web_scraper")
+
+_last_search_time = 0
+_MIN_SEARCH_INTERVAL = 2.0  # Minimum saniye aralığı
+_rate_lock = threading.Lock()
 
 
 def _retry(func, kelime, max_retries=2, delay=1.0):
@@ -138,6 +146,7 @@ def amazon_arama_selenium(kelime):
             except Exception:
                 continue
     except Exception as e:
+        _log.warning("Amazon Selenium hatası: %s", e)
         raise Exception(f"Tarayıcı Hatası veya Amazon Bot Koruma Engeli.\nÇözüm: Google Chrome güncelleyin veya tekrar deneyin.\nDetay: {str(e)[:80]}")
     finally:
         if driver:
@@ -146,6 +155,14 @@ def amazon_arama_selenium(kelime):
 
 
 def urun_ara(kelime, mode="hizli"):
+    global _last_search_time
+    with _rate_lock:
+        now = time.time()
+        elapsed = now - _last_search_time
+        if elapsed < _MIN_SEARCH_INTERVAL:
+            time.sleep(_MIN_SEARCH_INTERVAL - elapsed)
+        _last_search_time = time.time()
+
     tum_sonuclar = []
     tum_hatalar = []
     if mode == "kapsamli":
@@ -182,8 +199,8 @@ def trendyol_fiyat_getir(url):
             if price_tag:
                 fiyat_metin = price_tag.text.replace("TL", "").replace(".", "").replace(",", ".").strip()
                 return float(fiyat_metin)
-    except Exception:
-        pass
+    except Exception as e:
+        _log.debug("Trendyol fiyat çekme hatası: %s", e)
     return None
 
 
@@ -198,8 +215,8 @@ def n11_fiyat_getir(url):
             if price_tag:
                 fiyat_metin = price_tag.text.replace("TL", "").replace(".", "").replace(",", ".").strip()
                 return float(fiyat_metin)
-    except Exception:
-        pass
+    except Exception as e:
+        _log.debug("N11 fiyat çekme hatası: %s", e)
     return None
 
 

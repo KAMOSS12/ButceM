@@ -8,14 +8,82 @@ import sys
 import json
 import shutil
 import hashlib
+import secrets
 import datetime
 
 
 def get_base_dir():
-    """Uygulama kök dizinini döndür (script veya frozen exe uyumlu)."""
+    """Uygulama veri dizinini döndür. Frozen exe ise %APPDATA%/ButceM kullanır."""
+    if getattr(sys, 'frozen', False):
+        appdata = os.environ.get('APPDATA', '')
+        if appdata:
+            base = os.path.join(appdata, 'ButceM')
+            os.makedirs(base, exist_ok=True)
+            return base
+        return os.path.dirname(os.path.abspath(sys.executable))
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+def get_install_dir():
+    """Exe'nin bulunduğu dizini döndür (migrasyon ve kaynak dosyalar için)."""
     if getattr(sys, 'frozen', False):
         return os.path.dirname(os.path.abspath(sys.executable))
     return os.path.dirname(os.path.abspath(__file__))
+
+
+def migrate_data_to_appdata():
+    """Eski kurulum dizinindeki verileri %APPDATA%/ButceM'e kopyala (tek seferlik)."""
+    if not getattr(sys, 'frozen', False):
+        return
+
+    appdata = os.environ.get('APPDATA', '')
+    if not appdata:
+        return
+
+    appdata_base = os.path.join(appdata, 'ButceM')
+    exe_dir = os.path.dirname(os.path.abspath(sys.executable))
+
+    # Zaten aynı dizinse (edge case) atla
+    if os.path.normpath(appdata_base).lower() == os.path.normpath(exe_dir).lower():
+        return
+
+    old_data = os.path.join(exe_dir, "data")
+    new_data = os.path.join(appdata_base, "data")
+
+    # Eski data varsa ve yeni konumda yoksa kopyala
+    if os.path.isdir(old_data) and not os.path.isdir(new_data):
+        os.makedirs(appdata_base, exist_ok=True)
+        shutil.copytree(old_data, new_data)
+
+    # .env dosyasını da taşı
+    old_env = os.path.join(exe_dir, ".env")
+    new_env = os.path.join(appdata_base, ".env")
+    if os.path.exists(old_env) and not os.path.exists(new_env):
+        shutil.copy2(old_env, new_env)
+
+
+def hash_pin(pin, salt=None):
+    """PBKDF2 ile güçlü PIN hashleme. Format: salt$hash"""
+    if salt is None:
+        salt = secrets.token_hex(16)
+    pin_hash = hashlib.pbkdf2_hmac(
+        'sha256', pin.encode('utf-8'), salt.encode('utf-8'), 100_000
+    ).hex()
+    return f"{salt}${pin_hash}"
+
+
+def verify_pin(pin, stored_hash):
+    """PIN doğrulama. Hem PBKDF2 (salt$hash) hem eski SHA-256 formatını destekler.
+    Returns: (bool, str veya None) - (doğru mu, yeni hash gerekiyorsa PBKDF2 hash)
+    """
+    if '$' in stored_hash:
+        salt = stored_hash.split('$')[0]
+        return secrets.compare_digest(hash_pin(pin, salt), stored_hash), None
+    # Eski SHA-256 format - backward compat
+    old_hash = hashlib.sha256(pin.encode('utf-8')).hexdigest()
+    if secrets.compare_digest(old_hash, stored_hash):
+        return True, hash_pin(pin)  # Migrate edilecek yeni hash
+    return False, None
 
 
 def _profiles_dir():
@@ -28,7 +96,7 @@ def _profiles_index_path():
 
 def _default_settings():
     return {
-        "pin_hash": hashlib.sha256("1234".encode("utf-8")).hexdigest(),
+        "pin_hash": hash_pin("1234"),
         "theme": "Dark",
         "monthly_budget": 0,
         "notifications": {
@@ -100,7 +168,7 @@ def create_profile(name, pin="1234"):
     os.makedirs(os.path.join(profile_dir, "backups"), exist_ok=True)
 
     settings = _default_settings()
-    settings["pin_hash"] = hashlib.sha256(pin.encode("utf-8")).hexdigest()
+    settings["pin_hash"] = hash_pin(pin)
     save_profile_settings(safe_name, settings)
 
     index = _load_index()
@@ -246,7 +314,7 @@ def migrate_legacy_data():
                     if line.startswith("APP_PIN="):
                         pin_val = line.split("=", 1)[1].strip().strip('"').strip("'")
                         if pin_val:
-                            settings["pin_hash"] = pin_val if len(pin_val) == 64 else hashlib.sha256(pin_val.encode("utf-8")).hexdigest()
+                            settings["pin_hash"] = pin_val if len(pin_val) == 64 else hash_pin(pin_val)
         except OSError:
             pass
 
@@ -257,9 +325,24 @@ def migrate_legacy_data():
     _save_index(index)
 
 
+def _hide_data_directory():
+    """Frozen modda data/ dizinini Windows'ta gizle."""
+    if not getattr(sys, 'frozen', False):
+        return
+    try:
+        import ctypes
+        data_dir = os.path.join(get_base_dir(), "data")
+        if os.path.isdir(data_dir):
+            FILE_ATTRIBUTE_HIDDEN = 0x02
+            ctypes.windll.kernel32.SetFileAttributesW(str(data_dir), FILE_ATTRIBUTE_HIDDEN)
+    except Exception:
+        pass
+
+
 def ensure_profiles_exist():
     """En az bir profil olmasını garanti et."""
     migrate_legacy_data()
     if not list_profiles():
         create_profile("varsayilan", "1234")
         set_last_active_profile("varsayilan")
+    _hide_data_directory()

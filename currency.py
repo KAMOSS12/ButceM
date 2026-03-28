@@ -1,6 +1,9 @@
 import urllib.request
 import json
 import time
+from logger import get_logger
+
+_log = get_logger("currency")
 
 _cache = {"rates": None, "timestamp": 0}
 CACHE_TTL = 3600  # 1 saat
@@ -26,7 +29,8 @@ def get_exchange_rates():
         _cache["rates"] = result
         _cache["timestamp"] = now
         return result
-    except Exception:
+    except Exception as e:
+        _log.debug("Döviz kuru çekme hatası: %s", e)
         if _cache["rates"]:
             return _cache["rates"]
         return {"USD": 0.0, "EUR": 0.0}

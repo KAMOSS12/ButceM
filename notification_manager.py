@@ -5,6 +5,9 @@ Taksit hatırlatma, bütçe uyarısı ve aylık özet bildirimleri.
 
 import threading
 import datetime
+from logger import get_logger
+
+_log = get_logger("notification")
 
 
 def _send_toast(title, message, timeout=10):
@@ -17,8 +20,8 @@ def _send_toast(title, message, timeout=10):
             app_name="BütçeM",
             timeout=timeout
         )
-    except Exception:
-        pass
+    except Exception as e:
+        _log.debug("Toast bildirimi gönderilemedi: %s", e)
 
 
 class NotificationManager:
@@ -49,8 +52,8 @@ class NotificationManager:
                 if len(unpaid) > 5:
                     msg += f"\n...ve {len(unpaid)-5} ürün daha"
                 self.send_notification("Taksit Hatırlatması", msg)
-        except Exception:
-            pass
+        except Exception as e:
+            _log.warning("Taksit hatırlatma hatası: %s", e)
 
     def check_budget_warnings(self):
         """Aylık bütçe limitini kontrol et."""
@@ -72,8 +75,8 @@ class NotificationManager:
                     "Bütçe Uyarısı",
                     f"Bu ay {spent:.0f} TL harcandı.\nBütçenizin %{int(ratio*100)}'ine ulaştınız.\nLimit: {monthly_budget:.0f} TL"
                 )
-        except Exception:
-            pass
+        except Exception as e:
+            _log.warning("Bütçe uyarısı hatası: %s", e)
 
     def generate_monthly_summary(self):
         """Ayın ilk açılışında geçen ayın özetini bildir."""
@@ -97,11 +100,14 @@ class NotificationManager:
                     "Aylık Özet",
                     f"{ay_adi} {prev_year} toplamı: {spent:.0f} TL harcandı."
                 )
-        except Exception:
-            pass
+        except Exception as e:
+            _log.warning("Aylık özet hatası: %s", e)
 
     def start_periodic_checks(self):
-        """Periyodik bildirim kontrollerini başlat."""
+        """Periyodik bildirim kontrollerini başlat. Mevcut timer varsa önce cancel eder."""
+        if self.timer:
+            self.timer.cancel()
+            self.timer = None
         self._running = True
         self._schedule_next()
 

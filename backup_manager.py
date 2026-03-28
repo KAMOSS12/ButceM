@@ -8,6 +8,9 @@ import shutil
 import datetime
 import threading
 import profile_manager
+from logger import get_logger
+
+_log = get_logger("backup")
 
 
 class BackupManager:
@@ -19,12 +22,22 @@ class BackupManager:
 
     def get_backup_dir(self):
         """Yedek dizinini döndür. Özel dizin ayarlıysa onu kullan."""
-        custom = self.settings.get("custom_dir", "")
-        if custom and os.path.isdir(custom):
-            return custom
-        return os.path.join(
+        default_dir = os.path.join(
             profile_manager._profiles_dir(), self.profile_name, "backups"
         )
+        custom = self.settings.get("custom_dir", "")
+        if custom and os.path.isdir(custom):
+            real_custom = os.path.realpath(custom)
+            # Sistem dizinlerine yazımı engelle
+            forbidden = [os.environ.get("SYSTEMROOT", r"C:\Windows"),
+                         os.environ.get("PROGRAMFILES", r"C:\Program Files"),
+                         os.environ.get("PROGRAMFILES(X86)", r"C:\Program Files (x86)")]
+            for fb in forbidden:
+                if fb and real_custom.lower().startswith(fb.lower()):
+                    _log.warning("Güvenlik: Yedekleme dizini sistem dizinine yazamaz: %s", real_custom)
+                    return default_dir
+            return real_custom
+        return default_dir
 
     def create_backup(self):
         """Veritabanını yedekle. Dosya adı: urunler_YYYY-MM-DD_HHMMSS.db.bak"""
@@ -39,7 +52,7 @@ class BackupManager:
         backup_name = f"urunler_{timestamp}.db.bak"
         backup_path = os.path.join(backup_dir, backup_name)
 
-        shutil.copy2(db_path, backup_path)
+        shutil.copy(db_path, backup_path)  # copy2 yerine copy: mtime yeni dosyanın olmalı
         self._cleanup_old_backups()
         return backup_path
 
@@ -54,9 +67,9 @@ class BackupManager:
         for f in os.listdir(backup_dir):
             if f.endswith(".db.bak"):
                 full = os.path.join(backup_dir, f)
-                files.append((os.path.getmtime(full), full))
+                files.append((f, full))
 
-        files.sort(reverse=True)  # En yeniden en eskiye
+        files.sort(key=lambda x: x[0], reverse=True)  # Dosya adına göre sırala (YYYY-MM-DD_HHMMSS formatı kronolojik)
         for _, path in files[max_backups:]:
             try:
                 os.remove(path)
@@ -91,9 +104,19 @@ class BackupManager:
 
     def restore_backup(self, backup_path):
         """Yedeği geri yükle. Önce güvenlik yedeği alır."""
+        # Path doğrulama: sadece backup dizinindeki dosyalar kabul edilir
+        backup_dir = self.get_backup_dir()
+        real_backup = os.path.realpath(backup_path)
+        real_dir = os.path.realpath(backup_dir)
+        if not real_backup.startswith(real_dir + os.sep):
+            _log.warning("Güvenlik: Geçersiz backup yolu reddedildi: %s", backup_path)
+            return False
+        if not os.path.isfile(real_backup) or not real_backup.endswith(".db.bak"):
+            _log.warning("Güvenlik: Geçersiz backup dosyası: %s", backup_path)
+            return False
+
         db_path = profile_manager.get_profile_db_path(self.profile_name)
         if os.path.exists(db_path):
-            # Güvenlik yedeği
             safety = db_path + ".pre_restore.bak"
             shutil.copy2(db_path, safety)
         shutil.copy2(backup_path, db_path)
@@ -130,6 +153,6 @@ class BackupManager:
     def _do_scheduled_backup(self):
         try:
             self.create_backup()
-        except Exception:
-            pass
+        except Exception as e:
+            _log.warning("Zamanlanmış yedekleme hatası: %s", e)
         self._schedule_next()

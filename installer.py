@@ -17,6 +17,16 @@ REGISTRY_KEY = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\ButceM"
 REQUIRED_SPACE_MB = 200  # Minimum disk alanı (MB)
 
 
+def _hide_file(path):
+    """Windows'ta dosya/dizini gizle (Hidden attribute)."""
+    try:
+        import ctypes
+        FILE_ATTRIBUTE_HIDDEN = 0x02
+        ctypes.windll.kernel32.SetFileAttributesW(str(path), FILE_ATTRIBUTE_HIDDEN)
+    except Exception:
+        pass
+
+
 def _get_icon_path():
     """Frozen exe içindeki logo.ico yolunu döndür."""
     if getattr(sys, 'frozen', False):
@@ -95,10 +105,11 @@ Geliştirici Sürümü: V2.2 - Tüm Hakları Saklıdır.
 # ─── REGISTRY (Programlar ve Özellikler) ──────────────────────────────
 
 def _register_program(install_dir, exe_path):
-    """Windows 'Programlar ve Özellikler' listesine kayıt yaz (HKCU, admin gerekmez)."""
+    """Windows 'Programlar ve Özellikler' listesine kayıt yaz. Önce HKLM dener, izin yoksa HKCU'ya düşer.
+    Returns: (bool, str) - (başarı, hive adı veya hata mesajı)
+    """
     try:
         import winreg
-        key = winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, REGISTRY_KEY, 0, winreg.KEY_WRITE)
         size_kb = 0
         try:
             size_kb = os.path.getsize(exe_path) // 1024
@@ -111,43 +122,87 @@ def _register_program(install_dir, exe_path):
             "InstallLocation": install_dir,
             "DisplayIcon": f"{exe_path},0",
             "UninstallString": f'"{exe_path}" --uninstall',
+            "QuietUninstallString": f'"{exe_path}" --uninstall',
             "EstimatedSize": size_kb,
             "NoModify": 1,
             "NoRepair": 1,
+            "InstallDate": datetime.datetime.now().strftime("%Y%m%d"),
         }
+        hive_name = "HKLM"
+        try:
+            key = winreg.CreateKeyEx(winreg.HKEY_LOCAL_MACHINE, REGISTRY_KEY, 0, winreg.KEY_WRITE)
+        except (PermissionError, OSError):
+            hive_name = "HKCU"
+            try:
+                key = winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, REGISTRY_KEY, 0, winreg.KEY_WRITE)
+            except Exception as e:
+                return (False, f"Registry oluşturulamadı: {e}")
         for name, value in values.items():
             reg_type = winreg.REG_DWORD if isinstance(value, int) else winreg.REG_SZ
             winreg.SetValueEx(key, name, 0, reg_type, value)
         winreg.CloseKey(key)
+        return (True, hive_name)
+    except Exception as e:
+        return (False, f"Registry hatası: {e}")
+
+
+def _verify_registry():
+    """Registry kaydının doğruluğunu kontrol et.
+    Returns: (str, str) tuple (hive_name, display_name) veya None
+    """
+    try:
+        import winreg
+        for hive, hive_name in [(winreg.HKEY_LOCAL_MACHINE, "HKLM"),
+                                 (winreg.HKEY_CURRENT_USER, "HKCU")]:
+            try:
+                key = winreg.OpenKey(hive, REGISTRY_KEY, 0, winreg.KEY_READ)
+                display_name, _ = winreg.QueryValueEx(key, "DisplayName")
+                winreg.CloseKey(key)
+                return (hive_name, display_name)
+            except (FileNotFoundError, OSError):
+                continue
+        return None
     except Exception:
-        pass  # Registry yazılamadıysa kuruluma devam et
+        return None
 
 
 def _unregister_program():
-    """Registry kaydını sil."""
+    """Registry kaydını sil (her iki konumdan da)."""
     try:
         import winreg
-        winreg.DeleteKey(winreg.HKEY_CURRENT_USER, REGISTRY_KEY)
+        for hive in (winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER):
+            try:
+                winreg.DeleteKey(hive, REGISTRY_KEY)
+            except (FileNotFoundError, PermissionError, OSError):
+                pass
     except Exception:
         pass
 
 
 # ─── KISAYOL OLUŞTURMA ───────────────────────────────────────────────
 
+def _escape_vbs(s):
+    """VBScript string için güvenli escape."""
+    return s.replace('"', '""')
+
+
 def _create_shortcuts(install_dir, target_path, desktop=True, startmenu=True):
     """VBScript ile masaüstü ve/veya başlat menüsü kısayolu oluştur (ikonlu)."""
     vbs_lines = ['Set oWS = WScript.CreateObject("WScript.Shell")']
     icon_path = os.path.join(install_dir, "logo.ico")
     # logo.ico yoksa exe ikonunu kullan
-    icon_loc = f'"{icon_path}"' if os.path.exists(icon_path) else f'"{target_path},0"'
+    safe_icon = _escape_vbs(icon_path)
+    safe_target = _escape_vbs(target_path)
+    safe_install = _escape_vbs(install_dir)
+    icon_loc = f'"{safe_icon}"' if os.path.exists(icon_path) else f'"{safe_target},0"'
 
     if desktop:
         desktop_dir = os.path.join(os.environ.get("USERPROFILE", ""), "Desktop")
-        lnk = os.path.join(desktop_dir, "BütçeM.lnk")
+        lnk = _escape_vbs(os.path.join(desktop_dir, "BütçeM.lnk"))
         vbs_lines += [
             f'Set oLink1 = oWS.CreateShortcut("{lnk}")',
-            f'oLink1.TargetPath = "{target_path}"',
-            f'oLink1.WorkingDirectory = "{install_dir}"',
+            f'oLink1.TargetPath = "{safe_target}"',
+            f'oLink1.WorkingDirectory = "{safe_install}"',
             f'oLink1.IconLocation = {icon_loc}',
             'oLink1.Save',
         ]
@@ -155,11 +210,11 @@ def _create_shortcuts(install_dir, target_path, desktop=True, startmenu=True):
     if startmenu:
         appdata = os.getenv("APPDATA") or os.path.expanduser("~")
         programs = os.path.join(appdata, "Microsoft", "Windows", "Start Menu", "Programs")
-        lnk = os.path.join(programs, "BütçeM.lnk")
+        lnk = _escape_vbs(os.path.join(programs, "BütçeM.lnk"))
         vbs_lines += [
             f'Set oLink2 = oWS.CreateShortcut("{lnk}")',
-            f'oLink2.TargetPath = "{target_path}"',
-            f'oLink2.WorkingDirectory = "{install_dir}"',
+            f'oLink2.TargetPath = "{safe_target}"',
+            f'oLink2.WorkingDirectory = "{safe_install}"',
             f'oLink2.IconLocation = {icon_loc}',
             'oLink2.Save',
         ]
@@ -205,7 +260,13 @@ def _write_install_log(install_dir, options):
             f.write(f"Masaüstü      : {'Evet' if options.get('desktop') else 'Hayır'}\n")
             f.write(f"Başlat Menüsü : {'Evet' if options.get('startmenu') else 'Hayır'}\n")
             f.write(f"Prog. Listesi : {'Evet' if options.get('registry') else 'Hayır'}\n")
+            reg_result = _verify_registry()
+            if reg_result:
+                f.write(f"Registry      : {reg_result[0]} - '{reg_result[1]}'\n")
+            else:
+                f.write(f"Registry      : YAZILMADI\n")
             f.write(f"Durum         : Başarılı\n")
+        _hide_file(log_path)
     except OSError:
         pass
 
@@ -582,6 +643,7 @@ def baslat_kurulum_modu():
                 marker_path = os.path.join(install_dir, ".butcem_installed")
                 if not os.path.exists(marker_path):
                     open(marker_path, 'w').close()
+                _hide_file(marker_path)
 
                 # 6. Kısayollar (%85-92)
                 update_progress(0.87, "Kısayollar oluşturuluyor...")
@@ -592,7 +654,9 @@ def baslat_kurulum_modu():
                 # 7. Registry (%92-98)
                 if var_registry.get():
                     update_progress(0.94, "Windows program listesine kaydediliyor...")
-                    _register_program(install_dir, target_path)
+                    reg_ok, reg_info = _register_program(install_dir, target_path)
+                    if not reg_ok:
+                        update_progress(0.95, f"Registry uyarı: {reg_info}")
 
                 # 8. Günlük (%98-100)
                 update_progress(0.98, "Kurulum günlüğü yazılıyor...")
@@ -711,6 +775,7 @@ def _run_uninstall_dialog(parent=None, standalone=False):
 
             # 4. Kullanıcı verileri
             if var_delete_data.get():
+                # Eski konum (kurulum dizini)
                 data_dir = os.path.join(install_dir, "data")
                 if os.path.isdir(data_dir):
                     shutil.rmtree(data_dir, ignore_errors=True)
@@ -721,14 +786,25 @@ def _run_uninstall_dialog(parent=None, standalone=False):
                             os.remove(fpath)
                     except OSError:
                         pass
+                # Yeni konum (%APPDATA%/ButceM)
+                appdata_data = os.path.join(os.getenv("APPDATA", ""), "ButceM")
+                if os.path.isdir(appdata_data):
+                    shutil.rmtree(appdata_data, ignore_errors=True)
 
             # 5. Exe kendisini silemez, batch ile delayed delete
             exe_path = os.path.abspath(sys.executable) if getattr(sys, 'frozen', False) else None
             if exe_path:
+                # Batch özel karakterlerini escape et
+                def _safe_batch(p):
+                    for ch in ('&', '|', '>', '<', '^', '%'):
+                        p = p.replace(ch, f'^{ch}')
+                    return p
+                safe_exe = _safe_batch(exe_path)
+                safe_dir = _safe_batch(install_dir)
                 batch_content = f"""@echo off
 ping 127.0.0.1 -n 3 > nul
-del /f /q "{exe_path}"
-rmdir /s /q "{install_dir}"
+del /f /q "{safe_exe}"
+rmdir /s /q "{safe_dir}"
 del /f /q "%~f0"
 """
                 batch_path = os.path.join(os.environ.get("TEMP", "."), "_butcem_uninstall.bat")
