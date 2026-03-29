@@ -849,7 +849,7 @@ del /f /q "%~f0"
         dialog.wait_window()
 
 
-def show_uninstall_button_in_app(parent_frame, app_instance):
+def show_uninstall_button_in_app(parent_frame, app_instance, row=None):
     """Sistem Ayarları sayfasına 'Programı Kaldır' butonu ekler. Sadece frozen modda görünür."""
     if not getattr(sys, 'frozen', False):
         return
@@ -857,6 +857,8 @@ def show_uninstall_button_in_app(parent_frame, app_instance):
     def on_uninstall():
         _run_uninstall_dialog(parent=app_instance, standalone=False)
 
-    ctk.CTkButton(parent_frame, text="Programı Kaldır",
+    if row is None:
+        row = parent_frame.grid_size()[1]
+    ctk.CTkButton(parent_frame, text="Programi Kaldir",
                   fg_color="#B71C1C", hover_color="#7F0000",
-                  width=140, command=on_uninstall).grid(row=2, column=2, padx=10, pady=15, sticky="w")
+                  width=140, command=on_uninstall).grid(row=row, column=2, padx=10, pady=15, sticky="w")

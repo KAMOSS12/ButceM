@@ -27,7 +27,10 @@ try:
 except ImportError:
     genai = None
 
-load_dotenv()
+load_dotenv(os.path.join(
+    os.path.join(os.environ.get('APPDATA', ''), 'ButceM') if getattr(__import__('sys'), 'frozen', False) else os.path.dirname(os.path.abspath(__file__)),
+    ".env"
+))
 
 # TEMA AYARLARI
 ctk.set_appearance_mode("Dark")
@@ -1095,6 +1098,70 @@ class App(ctk.CTk):
         ctk.CTkButton(kutu, text="Kategorileri Yönet", fg_color=("#2E7D32", "#00695C"), hover_color=("#1B5E20", "#004D40"), width=180, command=self._show_kategori_yonetimi).grid(row=row_idx, column=1, padx=20, pady=15, sticky="w")
         row_idx += 1
 
+        # ── API KEY (Yapay Zeka Ayarları) ──
+        ctk.CTkLabel(kutu, text="─── Yapay Zeka Ayarları ───", font=ctk.CTkFont(size=14, weight="bold"), text_color=COLORS["accent_purple"]).grid(row=row_idx, column=0, columnspan=3, pady=(20, 10))
+        row_idx += 1
+
+        ctk.CTkLabel(kutu, text="Google Gemini AI API Key:", font=ctk.CTkFont(weight="bold")).grid(row=row_idx, column=0, padx=20, pady=15, sticky="e")
+        e_api_key = ctk.CTkEntry(kutu, width=250, show="*")
+        mevcut_key = os.getenv("GEMINI_API_KEY", "")
+        e_api_key.insert(0, mevcut_key)
+        e_api_key.grid(row=row_idx, column=1, padx=20, pady=15, sticky="w")
+        def set_api():
+            nk = e_api_key.get().strip()
+            os.environ["GEMINI_API_KEY"] = nk
+            env_file = os.path.join(profile_manager.get_base_dir(), ".env")
+            if not os.path.exists(env_file):
+                open(env_file, 'a').close()
+            set_key(env_file, "GEMINI_API_KEY", nk)
+            messagebox.showinfo("Basarili", "API Anahtari basariyla guncellendi!")
+        def clear_api():
+            e_api_key.delete(0, 'end')
+            os.environ["GEMINI_API_KEY"] = ""
+            env_file = os.path.join(profile_manager.get_base_dir(), ".env")
+            if os.path.exists(env_file):
+                set_key(env_file, "GEMINI_API_KEY", "")
+            messagebox.showinfo("Silindi", "API Anahtari sistemden temizlendi.")
+
+        def api_yardim():
+            yh = ctk.CTkToplevel(self)
+            yh.title("Gemini API Nasil Alinir?")
+            yh.geometry("600x550")
+            yh.transient(self)
+            yh.grab_set()
+
+            ctk.CTkLabel(yh, text="Nasil Ucretsiz Google Gemini API Anahtari Alinir?", font=ctk.CTkFont(size=18, weight="bold"), text_color=COLORS["accent_purple"]).pack(pady=15)
+
+            txt = ctk.CTkTextbox(yh, width=550, height=450, font=ctk.CTkFont(size=14))
+            txt.pack(padx=20, pady=10)
+
+            metin = (
+                "Adim 1: Google Hesabinizla Giris Yapin\n"
+                "  - Tarayicinizdan 'Google AI Studio' (https://aistudio.google.com/) adresine gidin.\n\n"
+                "Adim 2: API Anahtarinizi Olusturun\n"
+                "  - Sol menuden 'Get API key' (API anahtari al) secenegine tiklayin.\n"
+                "  - Cikan ekranda 'Create API key in new project' butonuna basin.\n"
+                "  - Ekrana gelen uzun sifre metnini (Google Gemini API Key) kopyalayin.\n\n"
+                "Adim 3: Sisteme Tanimlayin\n"
+                "  - Kopyaladiginiz anahtari bu ekrandaki 'API Key' kutusuna yapistirin ve 'Kaydet' deyin.\n\n"
+                "----------------------------------------------------\n\n"
+                "API Eklendiginde Neler Kazanacaksiniz?\n\n"
+                "Tipki trilyon dolarlik sirketlerin kullandigi finans asistanlari gibi;\n"
+                "- Yapay zeka tum harcamalarinizi analiz edip size ozel tasarruf onerileri sunacaktir.\n"
+                "- Kategorisel siskinliklerinizi tespit edip, luks veya zorunlu harcama analizi yapacaktir.\n"
+                "- Hangi ay nakit darbogazi olabilecegini tahmin edip maliyet & risk analizi raporlari uretecektir.\n"
+                "(Gizlilik notu: Urun isimleri asla yapay zeka ile paylasilmaz!)\n"
+            )
+            txt.insert("0.0", metin)
+            txt.configure(state="disabled")
+
+        api_btn_frame = ctk.CTkFrame(kutu, fg_color="transparent")
+        api_btn_frame.grid(row=row_idx, column=2, padx=10, sticky="w")
+        ctk.CTkButton(api_btn_frame, text="Kaydet", fg_color="#1B5E20", hover_color="#003300", width=60, command=set_api).pack(side="left", padx=5)
+        ctk.CTkButton(api_btn_frame, text="Temizle", fg_color="#B71C1C", hover_color="#7F0000", width=60, command=clear_api).pack(side="left", padx=5)
+        ctk.CTkButton(api_btn_frame, text="Nasil Alinir?", fg_color="#0D47A1", hover_color="#01579B", width=100, command=api_yardim).pack(side="left", padx=5)
+        row_idx += 1
+
         # ── PIN DEĞİŞTİR ──
         ctk.CTkLabel(kutu, text="Yeni Uygulama Şifresi (PIN):", font=ctk.CTkFont(weight="bold")).grid(row=row_idx, column=0, padx=20, pady=15, sticky="e")
         e_yeni_pin = ctk.CTkEntry(kutu, width=150, show="*")
@@ -1173,7 +1240,8 @@ class App(ctk.CTk):
         # ── PROGRAMI KALDIR ──
         try:
             import installer
-            installer.show_uninstall_button_in_app(kutu, self)
+            installer.show_uninstall_button_in_app(kutu, self, row=row_idx)
+            row_idx += 1
         except Exception:
             pass
 
@@ -1247,69 +1315,6 @@ class App(ctk.CTk):
         ctk.CTkButton(prof_btn_frame, text="Profil Değiştir", fg_color="#455A64", width=120, command=profil_degistir).pack(side="left", padx=5)
         ctk.CTkButton(prof_btn_frame, text="Profili Sil", fg_color="#B71C1C", hover_color="#7F0000", width=100, command=profil_sil).pack(side="left", padx=5)
         row_idx += 1
-
-        # ── API KEY ──
-        ctk.CTkLabel(kutu, text="─── Yapay Zeka Ayarları ───", font=ctk.CTkFont(size=14, weight="bold"), text_color=COLORS["accent_purple"]).grid(row=row_idx, column=0, columnspan=3, pady=(20, 10))
-        row_idx += 1
-
-        ctk.CTkLabel(kutu, text="Google Gemini AI API Key:", font=ctk.CTkFont(weight="bold")).grid(row=row_idx, column=0, padx=20, pady=15, sticky="e")
-        e_api_key = ctk.CTkEntry(kutu, width=250, show="*")
-        mevcut_key = os.getenv("GEMINI_API_KEY", "")
-        e_api_key.insert(0, mevcut_key)
-        e_api_key.grid(row=row_idx, column=1, padx=20, pady=15, sticky="w")
-        def set_api():
-            nk = e_api_key.get().strip()
-            os.environ["GEMINI_API_KEY"] = nk
-            env_file = os.path.join(profile_manager.get_base_dir(), ".env")
-            if not os.path.exists(env_file):
-                open(env_file, 'a').close()
-            set_key(env_file, "GEMINI_API_KEY", nk)
-            messagebox.showinfo("Başarılı", "API Anahtarı başarıyla güncellendi!")
-        def clear_api():
-            e_api_key.delete(0, 'end')
-            os.environ["GEMINI_API_KEY"] = ""
-            env_file = os.path.join(profile_manager.get_base_dir(), ".env")
-            if os.path.exists(env_file):
-                set_key(env_file, "GEMINI_API_KEY", "")
-            messagebox.showinfo("Silindi", "API Anahtarı sistemden temizlendi.")
-
-        def api_yardim():
-            yh = ctk.CTkToplevel(self)
-            yh.title("Gemini API Nasıl Alınır?")
-            yh.geometry("600x550")
-            yh.transient(self)
-            yh.grab_set()
-
-            ctk.CTkLabel(yh, text="Nasıl Ücretsiz Google Gemini API Anahtarı Alınır?", font=ctk.CTkFont(size=18, weight="bold"), text_color=COLORS["accent_purple"]).pack(pady=15)
-
-            txt = ctk.CTkTextbox(yh, width=550, height=450, font=ctk.CTkFont(size=14))
-            txt.pack(padx=20, pady=10)
-
-            metin = (
-                "Adım 1: Google Hesabınızla Giriş Yapın\n"
-                "  • Tarayıcınızdan 'Google AI Studio' (https://aistudio.google.com/) adresine gidin.\n\n"
-                "Adım 2: API Anahtarınızı Oluşturun\n"
-                "  • Sol menüden 'Get API key' (API anahtarı al) seçeneğine tıklayın.\n"
-                "  • Çıkan ekranda 'Create API key in new project' butonuna basın.\n"
-                "  • Ekrana gelen uzun şifre metnini (Google Gemini API Key) kopyalayın.\n\n"
-                "Adım 3: Sisteme Tanımlayın\n"
-                "  • Kopyaladığınız anahtarı bu ekrandaki 'API Key' kutusuna yapıştırın ve 'Kaydet' deyin.\n\n"
-                "----------------------------------------------------\n\n"
-                "💡 API Eklendiğinde Neler Kazanacaksınız?\n\n"
-                "Tıpkı trilyon dolarlık şirketlerin kullandığı finans asistanları gibi;\n"
-                "• Yapay zeka tüm harcamalarınızı analiz edip size özel tasarruf önerileri sunacaktır.\n"
-                "• Kategorisel şişkinliklerinizi tespit edip, lüks veya zorunlu harcama analizi yapacaktır.\n"
-                "• Hangi ay nakit darboğazına girebileceğinizi kestirip tahmini maliyet & risk analizi raporları üretecektir.\n"
-                "(Gizlilik notu: Ürün isimleri asla yapay zeka ile paylaşılmaz!)\n"
-            )
-            txt.insert("0.0", metin)
-            txt.configure(state="disabled")
-
-        api_btn_frame = ctk.CTkFrame(kutu, fg_color="transparent")
-        api_btn_frame.grid(row=row_idx, column=2, padx=10, sticky="w")
-        ctk.CTkButton(api_btn_frame, text="Kaydet", fg_color="#1B5E20", hover_color="#003300", width=60, command=set_api).pack(side="left", padx=5)
-        ctk.CTkButton(api_btn_frame, text="Temizle", fg_color="#B71C1C", hover_color="#7F0000", width=60, command=clear_api).pack(side="left", padx=5)
-        ctk.CTkButton(api_btn_frame, text="ℹ️ Nasıl Alınır?", fg_color="#0D47A1", hover_color="#01579B", width=100, command=api_yardim).pack(side="left", padx=5)
 
     # ─── WEB'DEN BUL ──────────────────────────────────────────────────
 

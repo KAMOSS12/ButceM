@@ -1,12 +1,26 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+from PyInstaller.utils.hooks import collect_data_files, collect_submodules
+
+ctk_datas = collect_data_files('customtkinter')
 
 a = Analysis(
     ['gui_app.py'],
     pathex=[],
     binaries=[],
-    datas=[('logo.ico', '.')],
-    hiddenimports=['customtkinter', 'google.generativeai', 'selenium', 'openpyxl', 'plyer', 'plyer.platforms', 'plyer.platforms.win', 'plyer.platforms.win.notification'],
+    datas=[('logo.ico', '.')] + ctk_datas,
+    hiddenimports=[
+        'customtkinter',
+        'google.generativeai',
+        'selenium',
+        'openpyxl',
+        'plyer', 'plyer.platforms', 'plyer.platforms.win', 'plyer.platforms.win.notification',
+        'requests',
+        'bs4',
+        'pandas',
+        'matplotlib',
+        'dotenv',
+    ] + collect_submodules('customtkinter'),
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

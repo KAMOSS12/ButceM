@@ -38,3 +38,7 @@ data/
 
 # Claude
 .claude/
+.mcp.json
+
+# Logs
+logs/
